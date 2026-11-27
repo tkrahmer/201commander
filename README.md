@@ -18,6 +18,7 @@
 | 🔌 **SSH mirror** | Map the local folder to a folder on a server with the same structure. 201Commander compares both sides (md5) and marks every file: `≠` differs, `↑` local only, `↓` only on the server. |
 | ↔️ **Diff & transfer** | See a diff of local against server, upload a file or folder, take the server version, or upload all differences at once. It asks before anything gets overwritten. |
 | 🌍 **English / Deutsch** | Follows your macOS language. The **EN/DE** button in the header switches it. |
+| 💾 **Retro mode** | One click turns it into a blue DOS-style file commander: double-line panels, a cyan selection bar, the IBM VGA pixel font, a command line and a working F1–F10 key bar. |
 
 ### Edit in place
 
@@ -28,6 +29,22 @@
 Open the SSH bar (server icon), enter `user@host` and the remote folder, and click **Connect**. The mapping is saved per local folder, and subfolders inherit it. Next time it reconnects by itself.
 
 ![Diff between the local file and the server copy](docs/diff.png)
+
+### Retro mode
+
+Click the monitor icon in the header (or press **F10** in retro mode to go back). The look is shared by every open 201Commander.
+
+![201Commander in retro DOS mode](docs/retro.png)
+
+| Key | Action | Key | Action |
+|---|---|---|---|
+| F1 | Language EN/DE | F6 | Get the server version |
+| F2 | Show in Finder | F7 | Reload and compare again |
+| F3 | Diff with the server | F8 | Pin / back to the main folder |
+| F4 | Edit the selected file | F9 | SSH bar |
+| F5 | Upload | F10 | Back to the modern look |
+
+The F-keys work while 201Commander has the focus if you merged `keys.json`. Without it, click them in the key bar.
 
 ### Narrow side panel
 
@@ -68,7 +85,11 @@ Herdr picks the mod up within a second, no restart needed.
 ```json
 {
   "global": { "cmd-shift-e": { "command": "pane.split", "args": { "direction": "right", "mod": "201commander" } } },
-  "mod:201commander": { "cmd-s": "201commander.save" }
+  "mod:201commander": {
+    "cmd-s": "201commander.save",
+    "f1": "201commander.f1", "f2": "201commander.f2", "f3": "201commander.f3", "f4": "201commander.f4", "f5": "201commander.f5",
+    "f6": "201commander.f6", "f7": "201commander.f7", "f8": "201commander.f8", "f9": "201commander.f9", "f10": "201commander.f10"
+  }
 }
 ```
 
@@ -117,7 +138,7 @@ Apache-2.0, like Herdr. See [NOTICE](NOTICE) for the parts adapted from Herdr's 
 
 ## Deutsch
 
-**201Commander** ist ein Datei-Commander für Herdr. Er öffnet den Hauptordner des aktiven Space und zeigt die Dateien als Baum. Du kannst Dateien direkt bearbeiten (**⌘S** speichert), sie im Finder zeigen und einen Server-Ordner mit gleicher Struktur per SSH vergleichen. Dabei bedeutet `≠` unterschiedlich, `↑` nur lokal und `↓` nur auf dem Server. Außerdem gibt es einen Diff, Hochladen, Server-Version übernehmen und „Alle hoch“. Vor jedem Überschreiben fragt er nach. Die Sprache folgt macOS, der Button **EN/DE** im Kopf schaltet um.
+**201Commander** ist ein Datei-Commander für Herdr. Er öffnet den Hauptordner des aktiven Space und zeigt die Dateien als Baum. Du kannst Dateien direkt bearbeiten (**⌘S** speichert), sie im Finder zeigen und einen Server-Ordner mit gleicher Struktur per SSH vergleichen. Dabei bedeutet `≠` unterschiedlich, `↑` nur lokal und `↓` nur auf dem Server. Außerdem gibt es einen Diff, Hochladen, Server-Version übernehmen und „Alle hoch“. Vor jedem Überschreiben fragt er nach. Die Sprache folgt macOS, der Button **EN/DE** im Kopf schaltet um. Das Monitor-Symbol schaltet in den **Retro-Modus**: blaues DOS-Design mit Doppelrahmen, Pixel-Schrift und funktionierender F1–F10-Leiste (F10 schaltet zurück).
 
 **Installation:** Bitte einen Agenten in Herdr: *„Füge den Herdr-Mod von https://github.com/tkrahmer/201commander hinzu“*. Oder von Hand:
 

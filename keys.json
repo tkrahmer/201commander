@@ -1,4 +1,24 @@
 {
-  "global": { "cmd-shift-e": { "command": "pane.split", "args": { "direction": "right", "mod": "201commander" } } },
-  "mod:201commander": { "cmd-s": "201commander.save" }
+  "global": {
+    "cmd-shift-e": {
+      "command": "pane.split",
+      "args": {
+        "direction": "right",
+        "mod": "201commander"
+      }
+    }
+  },
+  "mod:201commander": {
+    "cmd-s": "201commander.save",
+    "f1": "201commander.f1",
+    "f2": "201commander.f2",
+    "f3": "201commander.f3",
+    "f4": "201commander.f4",
+    "f5": "201commander.f5",
+    "f6": "201commander.f6",
+    "f7": "201commander.f7",
+    "f8": "201commander.f8",
+    "f9": "201commander.f9",
+    "f10": "201commander.f10"
+  }
 }

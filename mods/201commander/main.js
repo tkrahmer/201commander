@@ -10,6 +10,21 @@ const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", 
 const PER_FOLDER = 500, TOTAL = 5000;
 const SSH_KEY = "201commander.ssh", HOSTS_KEY = "201commander.hosts";
 const LANG_KEY = "201commander.lang";
+const RETRO_KEY = "201commander.retro";
+
+// Retro look: the CGA blue of the classic DOS file commanders, in the IBM VGA pixel font
+// that Herdr ships with its Herdr 98 layout.
+const DOS_FONT = "PxPlus IBM VGA 8x16";
+const DOS = {
+  background: "#0000aa", surface: "#0000aa", canvas: "#0000aa", popover: "#0000aa", chrome: "#00aaaa",
+  raised: "#000080", hover: "#0000d8", selected: "#00aaaa", selection: "#00aaaa", border: "#55ffff", input: "#55ffff",
+  foreground: "#55ffff", muted: "#55ffff", dim: "#00aaaa", accent: "#ffffff", accent_foreground: "#000000",
+  solid: "#00aaaa", solid_foreground: "#000000", working: "#ffff55", blocked: "#ffff55", done: "#55ff55",
+  idle: "#55ffff", unknown: "#aaaaaa", ansi0: "#000000", ansi1: "#ff5555", ansi2: "#55ff55", ansi3: "#ffff55",
+  ansi4: "#ff55ff", ansi5: "#ffffff", ansi6: "#55ffff", ansi7: "#aaaaaa", white: "#ffffff", yellow: "#ffff55", black: "#000000",
+};
+// On the cyan selection bar everything is drawn black.
+const DOS_BAR = { ...DOS, muted: "#000000", dim: "#000000", foreground: "#000000", ansi2: "#000000", ansi4: "#000000", blocked: "#000000", accent: "#000000", hover: "#55ffff" };
 
 // UI language: German when macOS (or $LANG) is German, else English; the header's DE/EN
 // button overrides it for every copy (shared LANG_KEY).
@@ -110,15 +125,47 @@ export default class Commander extends View {
     cx.spawn(async (cx) => { this.autoDe = await detectGerman(); cx.notify(); });
     this.refresh(cx);
     cx.timer.every(10000, (cx) => this.refresh(cx));
+    cx.timer.every(20000, (cx) => { if (this.retroOn()) cx.notify(); });
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
         if (c === "save") this.save(cx);
+        else if (/^f([1-9]|10)$/.test(c)) this.fkey(Number(c.slice(1)), cx);
+        else if (c === "retro") this.toggleRetro(cx);
         else if (c === "lang-de" || c === "lang-en") setShared(LANG_KEY, c.slice(5));
         else if (c === "focus") this.handle.focus();
         cx.notify();
       }
     });
+  }
+
+  // ----- look -----
+  retroOn() { return shared(RETRO_KEY) === true; }
+  pal() { return this.retroOn() ? DOS : theme(); }
+  sz(n) { return this.retroOn() ? 16 : n; }
+  toggleRetro(cx) {
+    setShared(RETRO_KEY, !this.retroOn());
+    if (this.editor && this.file && this.editorRetro !== this.retroOn()) this.makeEditor(null, this.file, true);
+    cx.notify();
+  }
+
+  // F1–F10 in the retro key bar (and from keys.json: "201commander.f5" …).
+  fkey(n, cx) {
+    const rel = this.sel ?? (this.view !== "tree" ? (this.view === "diff" ? this.diffFile : this.file) : null);
+    const dir = rel ? this.isDir(rel) : false, remote = rel ? this.cmp.get(rel) ?? ((this.remoteOnly.get(dirname(rel)) ?? []).some((e) => e.name === basename(rel)) ? "remote" : null) : null;
+    switch (n) {
+      case 1: setShared(LANG_KEY, UI_DE ? "en" : "de"); break;
+      case 2: if (!this.on) rel ? this.finder(rel, dir) : this.finder("", true); break;
+      case 3: if (rel && !dir && this.connected()) this.showDiff(rel, cx); break;
+      case 4: if (rel && !dir && remote !== "remote") this.openFile(rel, cx); break;
+      case 5: if (rel && remote !== "remote" && this.connected()) this.upload(rel, dir, cx); break;
+      case 6: if (rel && (remote === "remote" || remote === "diff") && this.connected()) this.download(rel, dir, cx); break;
+      case 7: this.refresh(cx); if (this.connected()) cx.spawn(async (cx) => { await this.compareAll(this.ctx, cx).catch(() => {}); cx.notify(); }); break;
+      case 8: { const following = !(this.pinned && this.pinned.space === (spaces().find((s) => s.active)?.id ?? null)); this.setPinned(following ? this.root : null, cx); break; }
+      case 9: if (!this.on) this.sshOpen = !this.sshOpen; break;
+      case 10: this.toggleRetro(cx); break;
+    }
+    cx.notify();
   }
 
   // ----- where we are -----
@@ -283,19 +330,25 @@ export default class Commander extends View {
 
   // Narrow (side panel): soft wrap; wide: long lines scroll. `keep` rebuilds with the current text.
   makeEditor(text, rel, keep = false) {
-    const t = theme(), ext = rel.includes(".") ? rel.split(".").pop().toLowerCase() : "txt";
-    const value = keep && this.editor ? this.editor.value() : text, range = keep && this.editor ? this.editor.selected_range() : null;
-    this.editor?.release();
+    const t = this.pal(), retro = this.retroOn(), ext = rel.includes(".") ? rel.split(".").pop().toLowerCase() : "txt";
+    const old = this.editor, value = keep && old ? old.value() : text, range = keep && old ? old.selected_range() : null;
+    const wrap = this.width > 0 && this.width < 760, font = retro ? DOS_FONT : settings().font_family;
+    let next;
+    try {
+      next = EditorState.new({ language: LANG[ext] ?? ext, value, readonly: Boolean(this.on), soft_wrap: wrap,
+        ...(font ? { font_family: font } : {}), font_size: retro ? 16 : 12.5,
+        syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
+    } catch (e) { this.note = { text: L(`Editor-Fehler: ${e?.message ?? e}`, `Editor error: ${e?.message ?? e}`), level: "error" }; return; }
+    // Release the old state only once the new one exists, so a failure keeps the old editor.
     if (!keep) { this.original = text; this.dirty = false; this.conflict = false; }
-    this.wrap = this.width > 0 && this.width < 760;
-    this.editor = EditorState.new({ language: LANG[ext] ?? ext, value, readonly: Boolean(this.on), soft_wrap: this.wrap,
-      font_family: settings().font_family, font_size: 12.5,
-      syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
-    this.editor.on("change", (_e, cx) => {
-      const d = this.editor.value() !== this.original;
+    this.wrap = wrap; this.editorRetro = retro; this.editor = next;
+    old?.release();
+    next.on("change", (_e, cx) => {
+      if (this.editor !== next) return;
+      const d = next.value() !== this.original;
       if (d !== this.dirty) { this.dirty = d; cx.notify(); }
     });
-    if (range) { try { this.editor.set_selected_range(range); } catch {} }
+    if (range) { try { next.set_selected_range(range); } catch {} }
   }
 
   save(cx, force = false) {
@@ -511,14 +564,14 @@ export default class Commander extends View {
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((e, cx) => { if (enabled) { cx.stop_propagation(); onClick(e, cx); cx.notify(); } })
       .child(svg(M + iconName + ".svg").size(14).flex_none().text_color(opts.solid ? t.solid_foreground : opts.color ?? (enabled ? t.muted : t.dim)))
-      .when(Boolean(opts.label), (e) => e.child(div().text_size(12).child(opts.label)));
+      .when(Boolean(opts.label), (e) => e.child(div().text_size(this.sz(12)).child(opts.label)));
   }
 
   badge(status, t) {
     const map = { diff: ["≠", t.blocked, L("Unterschiedlich zum Server", "Differs from the server")], local: ["↑", t.ansi2, L("Nur lokal – noch nicht auf dem Server", "Local only – not on the server yet")], remote: ["↓", t.ansi4, L("Nur auf dem Server", "Only on the server")] };
     const b = map[status];
     if (!b) return null;
-    return div().id(`badge-${status}`).w(14).flex_none().text_size(12).font_semibold().text_color(b[1]).child(b[0]);
+    return div().id(`badge-${status}`).w(14).flex_none().text_size(this.sz(12)).font_semibold().text_color(b[1]).child(b[0]);
   }
 
   rows(prefix, depth, out, t) {
@@ -532,6 +585,7 @@ export default class Commander extends View {
       const open = !entry.remote && this.folders.has(path), mark = this.marks[`${this.root}/${path}`];
       const sel = this.sel === path, status = entry.remote ? "remote" : conn ? this.cmp.get(path) : null;
       const active = (this.view === "file" && this.file === path) || (this.view === "diff" && this.diffFile === path);
+      if (this.retroOn()) { out.push(this.dosRow(entry, path, depth, open, mark, sel || active, sel, status, t)); if (entry.dir && open) this.rows(path, depth + 1, out, t); continue; }
       out.push(h_flex().id(`row-${entry.remote ? "r" : "l"}-${path}`).h(28).flex_none().pl(6 + depth * 16).pr(4).gap(6).items_center().rounded(6).cursor_pointer()
         .when(sel || active, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
@@ -546,7 +600,7 @@ export default class Commander extends View {
         .child(this.icon(entry.dir ? (open ? "folder-open" : "folder") : "file", t, 14, entry.remote ? t.dim : entry.dir ? t.accent : t.muted))
         .child(div().flex_1().min_w(0).truncate().text_color(entry.remote ? t.dim : t.foreground).child(entry.name))
         .when(sel, (e) => e.children(this.rowActions(path, entry, status, t)))
-        .when(Boolean(mark) && !sel, (e) => e.child(div().w(12).flex_none().text_size(11).text_color(mark === "A" ? t.ansi2 : mark === "D" || mark === "U" ? t.ansi1 : t.blocked).child(mark)))
+        .when(Boolean(mark) && !sel, (e) => e.child(div().w(12).flex_none().text_size(this.sz(11)).text_color(mark === "A" ? t.ansi2 : mark === "D" || mark === "U" ? t.ansi1 : t.blocked).child(mark)))
         .when(Boolean(status) && status !== "same", (e) => e.child(this.badge(status, t))));
       if (entry.dir && open) this.rows(path, depth + 1, out, t);
     }
@@ -569,11 +623,78 @@ export default class Commander extends View {
     return a;
   }
 
+  // ----- retro look -----
+  dosRow(entry, path, depth, open, mark, bar, sel, status, t) {
+    const b = bar ? DOS_BAR : DOS, nameColor = bar ? DOS.black : entry.remote ? DOS.dim : entry.dir ? DOS.white : DOS.foreground;
+    return h_flex().id(`row-${entry.remote ? "r" : "l"}-${path}`).h(20).flex_none().pl(4 + depth * 16).pr(2).gap(8).items_center().cursor_pointer()
+      .when(bar, (e) => e.bg(DOS.selected)).when(!bar, (e) => e.hover((s) => s.bg(DOS.hover)))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((e, cx) => {
+        this.sel = path;
+        if (entry.remote) { cx.notify(); return; }
+        if (entry.dir) { if (e.click_count === 2) this.setPinned(this.abs(path), cx); else this.toggle(path, cx); }
+        else this.openFile(path, cx);
+        cx.notify();
+      })
+      .child(div().w(10).flex_none().text_color(bar ? DOS.black : DOS.white).child(entry.dir && !entry.remote ? (open ? "▼" : "►") : ""))
+      .child(div().flex_1().min_w(0).truncate().text_color(nameColor).child(entry.dir ? entry.name.toUpperCase() : entry.name))
+      .when(sel, (e) => e.children(this.rowActions(path, entry, status, b)))
+      .when(Boolean(mark) && !sel, (e) => e.child(div().w(10).flex_none().text_color(mark === "A" ? DOS.ansi2 : mark === "D" || mark === "U" ? DOS.ansi1 : DOS.yellow).child(mark)))
+      .when(Boolean(status) && status !== "same", (e) => e.child(this.badge(status, b)))
+      .when(entry.dir && !sel, (e) => e.child(div().flex_none().text_color(bar ? DOS.black : DOS.white).child(L("►ORDNER◄", "►SUB-DIR◄"))));
+  }
+
+  // A double-line frame with its title in the top line, as DOS file commanders drew panels.
+  dosFrame(id, title, active, body) {
+    return div().id(id).relative().h_full().min_h(0).min_w(0).pt(8).px(4).pb(2)
+      .child(div().size_full().border_1().border_color(DOS.border).p(2)
+        .child(v_flex().size_full().min_h(0).border_1().border_color(DOS.border).overflow_hidden().child(body)))
+      .when(Boolean(title), (e) => e.child(h_flex().absolute().top(0).left(0).right(0).h(16).justify_center()
+        .child(div().px(4).bg(active ? DOS.selected : DOS.background).text_color(active ? DOS.black : DOS.white).truncate().child(` ${title} `))));
+  }
+
+  dosMenu(overlay) {
+    const item = (id, label, tip, onClick, on = true) => div().id(id).px(10).h_full().flex().items_center().flex_none()
+      .text_color(on ? DOS.black : "#006666").when(on, (e) => e.cursor_pointer().hover((s) => s.bg(DOS.black).text_color(DOS.foreground)))
+      .tooltip(tip).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { if (on) { cx.stop_propagation(); onClick(cx); cx.notify(); } }).child(label);
+    const following = !(this.pinned && this.pinned.space === (spaces().find((s) => s.active)?.id ?? null));
+    const now = new Date(), clock = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    return h_flex().h(22).flex_none().bg(DOS.chrome).text_color(DOS.black).items_center()
+      .child(div().px(10).h_full().flex().items_center().bg(DOS.black).text_color(DOS.yellow).flex_none().child("201Commander"))
+      .child(item("m-up", L("Hoch", "Up"), L("Übergeordneter Ordner", "Parent folder"), (cx) => this.root && this.setPinned(dirname(this.root) || "/", cx), Boolean(this.root) && !this.on))
+      .child(item("m-dir", L("Ordner", "Dir"), L("Ordner wählen…", "Choose folder…"), (cx) => cx.spawn(async (cx) => { const p = await pickFolder({ prompt: L("Öffnen", "Open") }); if (p) this.setPinned(p, cx); })))
+      .child(item("m-pin", following ? L("Fixieren", "Pin") : L("Haupt", "Main"), following ? L("Hauptordner des Space – klicken zum Fixieren", "Space main folder – click to pin") : L("Fixiert – klicken für den Hauptordner des Space", "Pinned – click for the space main folder"), (cx) => this.fkey(8, cx)))
+      .child(item("m-ssh", this.conn.state === "ok" ? "SSH ✓" : "SSH", L("SSH-Server verbinden / vergleichen", "Connect / compare SSH server"), (cx) => this.fkey(9, cx), !this.on))
+      .child(item("m-lang", UI_DE ? "DE" : "EN", L("Sprache umschalten", "Switch language"), (cx) => this.fkey(1, cx)))
+      .child(item("m-modern", L("Modern", "Modern"), L("Zurück zum normalen Design", "Back to the normal look"), (cx) => this.toggleRetro(cx)))
+      .child(div().flex_1())
+      .child(div().px(10).flex_none().child(clock))
+      .when(Boolean(overlay), (e) => e.child(item("m-close", "[■]", L("Schließen", "Close"), () => closeOverlay(overlay))));
+  }
+
+  dosKeys() {
+    const keys = [[1, L("Sprache", "Lang")], [2, "Finder"], [3, "Diff"], [4, L("Bearb.", "Edit")], [5, L("Hoch", "Upload")],
+      [6, L("Runter", "Get")], [7, L("Neu", "Reload")], [8, L("Fix", "Pin")], [9, "SSH"], [10, "Modern"]];
+    return h_flex().h(20).flex_none().bg(DOS.black).children(keys.map(([n, label]) =>
+      h_flex().id(`fk-${n}`).flex_1().min_w(0).h_full().cursor_pointer()
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .on_click((_e, cx) => { cx.stop_propagation(); this.fkey(n, cx); })
+        .child(div().flex_none().pl(n === 1 ? 0 : 6).pr(1).text_color(DOS.white).child(String(n)))
+        .child(div().flex_1().min_w(0).truncate().bg(DOS.selected).text_color(DOS.black).hover((s) => s.bg(DOS.foreground)).child(label))));
+  }
+
+  dosPrompt() {
+    return h_flex().h(20).flex_none().px(2).bg(DOS.black).text_color(DOS.ansi7)
+      .child(div().min_w(0).truncate().child(`${tilde(this.root) || "C:\\"}>`))
+      .child(div().text_color(DOS.ansi7).frames(["_", " "], 530));
+  }
+
   header(t, overlay) {
     const following = !(this.pinned && this.pinned.space === (spaces().find((s) => s.active)?.id ?? null));
     return h_flex().h(40).flex_none().pl(overlay ? 12 : 10).pr(6).gap(2).items_center().border_b(1).border_color(t.border).bg(t.chrome)
       .child(div().font_semibold().pr(6).child("201Commander"))
-      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(tilde(this.root) || L("Kein Ordner", "No folder")))
+      .child(div().flex_1().min_w(0).truncate().text_size(this.sz(12)).text_color(t.dim).child(tilde(this.root) || L("Kein Ordner", "No folder")))
       .child(this.btn("h-up", "up", L("Übergeordneter Ordner", "Parent folder"), (_e, cx) => this.root && this.setPinned(dirname(this.root) || "/", cx), t, { enabled: Boolean(this.root) && !this.on }))
       .child(this.btn("h-pick", "folder-open", L("Ordner wählen…", "Choose folder…"), (_e, cx) => cx.spawn(async (cx) => { const p = await pickFolder({ prompt: L("Öffnen", "Open") }); if (p) this.setPinned(p, cx); }), t))
       .child(this.btn("h-follow", following ? "crosshair" : "pin", following ? L("Hauptordner des Space – klicken zum Fixieren", "Space main folder – click to pin") : L("Fixiert – klicken für den Hauptordner des Space", "Pinned – click for the space main folder"), (_e, cx) => this.setPinned(following ? this.root : null, cx), t, { color: following ? t.accent : t.blocked, enabled: Boolean(this.root || this.pinned) }))
@@ -581,7 +702,8 @@ export default class Commander extends View {
       .child(this.btn("h-finder", "finder", L("Ordner im Finder öffnen", "Open folder in Finder"), () => this.finder("", true), t, { enabled: Boolean(this.root) && !this.on }))
       .child(this.btn("h-ssh", "server", L("SSH-Server verbinden / vergleichen", "Connect / compare SSH server"), (_e, cx) => { this.sshOpen = !this.sshOpen; }, t,
         { color: this.conn.state === "ok" ? t.ansi2 : this.conn.state === "error" ? t.ansi1 : this.sshOpen ? t.foreground : undefined, enabled: !this.on }))
-      .child(div().id("h-lang").h(26).px(6).flex().items_center().rounded(6).flex_none().cursor_pointer().text_size(11).font_semibold().text_color(t.dim)
+      .child(this.btn("h-retro", "retro", L("Retro-DOS-Design", "Retro DOS look"), (_e, cx) => this.toggleRetro(cx), t))
+      .child(div().id("h-lang").h(26).px(6).flex().items_center().rounded(6).flex_none().cursor_pointer().text_size(this.sz(11)).font_semibold().text_color(t.dim)
         .hover((st) => st.bg(t.hover).text_color(t.foreground)).tooltip(L("Sprache: Deutsch – klicken für Englisch", "Language: English – click for German"))
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
         .on_click((_e, cx) => { cx.stop_propagation(); setShared(LANG_KEY, UI_DE ? "en" : "de"); cx.notify(); })
@@ -592,11 +714,11 @@ export default class Commander extends View {
   sshBar(t) {
     const c = this.cfg(), st = this.conn.state;
     const field = (id, state, w) => div().id(id).flex_1().min_w(w).h(28).px(8).flex().items_center().rounded(6).border_1().border_color(t.input).bg(t.background).cursor_text()
-      .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(state).h_full().text_size(12).text_color(t.foreground));
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(state).h_full().text_size(this.sz(12)).text_color(t.foreground));
     const counts = { diff: 0, local: 0, remote: 0 };
     for (const s of this.cmp.values()) if (counts[s] !== undefined) counts[s]++;
     for (const l of this.remoteOnly.values()) counts.remote += l.length;
-    return v_flex().flex_none().p(8).gap(6).border_b(1).border_color(t.border).bg(t.surface).text_size(12)
+    return v_flex().flex_none().p(8).gap(6).border_b(1).border_color(t.border).bg(t.surface).text_size(this.sz(12))
       .child(h_flex().gap(6).items_center().flex_wrap()
         .child(field("ssh-host", this.hostInput, 150))
         .child(field("ssh-remote", this.remoteInput, 150))
@@ -617,8 +739,8 @@ export default class Commander extends View {
     const rows = this.rows("", 0, [], t);
     return div().flex_1().min_h(0).relative()
       .child(v_flex().id("201commander-tree").absolute().inset_0().overflow_y_scroll().p(5).children(rows)
-        .when(Boolean(this.error) || !rows.length, (e) => e.child(div().p(8).text_size(12).text_color(this.error ? t.ansi1 : t.dim).child(this.error || (this.loading ? L("Lade…", "Loading…") : this.root ? L("Leerer Ordner", "Empty folder") : L("Kein Ordner – Ordner wählen oder ein Terminal fokussieren", "No folder – choose one or start a terminal in this space")))))
-        .when(this.limited, (e) => e.child(div().p(8).text_size(11).text_color(t.dim).child(L("Liste begrenzt auf 500 Einträge pro Ordner / 5.000 gesamt", "List limited to 500 entries per folder / 5,000 total")))))
+        .when(Boolean(this.error) || !rows.length, (e) => e.child(div().p(8).text_size(this.sz(12)).text_color(this.error ? t.ansi1 : t.dim).child(this.error || (this.loading ? L("Lade…", "Loading…") : this.root ? L("Leerer Ordner", "Empty folder") : L("Kein Ordner – Ordner wählen oder ein Terminal fokussieren", "No folder – choose one or start a terminal in this space")))))
+        .when(this.limited, (e) => e.child(div().p(8).text_size(this.sz(11)).text_color(t.dim).child(L("Liste begrenzt auf 500 Einträge pro Ordner / 5.000 gesamt", "List limited to 500 entries per folder / 5,000 total")))))
       .child(Scrollbar.vertical("201commander-tree").absolute().inset_0());
   }
 
@@ -628,9 +750,9 @@ export default class Commander extends View {
       .child(h_flex().h(36).flex_none().px(6).gap(2).items_center().border_b(1).border_color(t.border)
         .when(narrow, (e) => e.child(this.btn("f-back", "back", L("Zurück zur Liste", "Back to list"), () => this.guard(() => { this.closeFile(); this.view = "tree"; }), t)))
         .child(h_flex().flex_1().min_w(0).gap(6).items_center().px(4)
-          .child(div().min_w(0).truncate().font_semibold().text_size(12).child(basename(rel)))
+          .child(div().min_w(0).truncate().font_semibold().text_size(this.sz(12)).child(basename(rel)))
           .when(this.dirty, (e) => e.child(div().w(7).h(7).rounded(4).flex_none().bg(t.blocked)))
-          .child(div().min_w(0).flex_1().truncate().text_size(11).text_color(t.dim).child(dirname(rel)))
+          .child(div().min_w(0).flex_1().truncate().text_size(this.sz(11)).text_color(t.dim).child(dirname(rel)))
           .when(Boolean(status) && status !== "same", (e) => e.child(this.badge(status, t))))
         .when(!this.on, (e) => e
           .child(this.btn("f-save", "save", L("Speichern (⌘S)", "Save (⌘S)"), (_e, cx) => this.save(cx), t, { enabled: this.dirty || this.conflict, solid: this.dirty, label: this.saving ? "…" : L("Speichern", "Save") }))
@@ -640,12 +762,12 @@ export default class Commander extends View {
         .when(conn, (e) => e
           .child(this.btn("f-diff", "diff", L("Mit Server vergleichen", "Compare with server"), (_e, cx) => this.showDiff(rel, cx), t, { color: status === "diff" ? t.blocked : undefined }))
           .child(this.btn("f-up", "upload", L("Auf Server hochladen", "Upload to server"), (_e, cx) => { if (this.dirty) this.note = { text: L("Erst speichern, dann hochladen", "Save first, then upload"), level: "error" }; else this.upload(rel, false, cx); }, t, { color: status === "local" || status === "diff" ? t.ansi2 : undefined }))))
-      .when(this.conflict, (e) => e.child(h_flex().flex_none().px(10).py(6).gap(8).items_center().bg(t.ansi1 + "22").text_size(12)
+      .when(this.conflict, (e) => e.child(h_flex().flex_none().px(10).py(6).gap(8).items_center().bg(t.ansi1 + "22").text_size(this.sz(12))
         .child(div().flex_1().child(L("Datei wurde extern geändert.", "The file was changed elsewhere.")))
         .child(this.btn("c-reload", "refresh", L("Neu laden (eigene Änderungen verwerfen)", "Reload (discard your changes)"), (_e, cx) => this.reload(cx), t, { label: L("Neu laden", "Reload") }))
         .child(this.btn("c-force", "save", L("Trotzdem überschreiben", "Overwrite anyway"), (_e, cx) => this.save(cx, true), t, { label: L("Überschreiben", "Overwrite") }))))
       .child(div().flex_1().min_h(0).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-        .child(this.editor ? Editor.new(this.editor).size_full() : div().p(12).text_size(12).text_color(t.dim).child(this.fileError || L("Lade Datei…", "Loading file…"))));
+        .child(this.editor ? Editor.new(this.editor).size_full().when(this.retroOn(), (e) => e.bg(DOS.background).text_color(DOS.foreground)) : div().p(12).text_size(this.sz(12)).text_color(t.dim).child(this.fileError || L("Lade Datei…", "Loading file…"))));
   }
 
   diffView(t, narrow) {
@@ -653,13 +775,13 @@ export default class Commander extends View {
     return v_flex().flex_1().h_full().min_w(0).min_h(0)
       .child(h_flex().h(36).flex_none().px(6).gap(4).items_center().border_b(1).border_color(t.border)
         .child(this.btn("d-back", "back", L("Zurück", "Back"), () => { this.view = this.file ? "file" : "tree"; }, t))
-        .child(div().flex_1().min_w(0).truncate().text_size(12).child(h_flex().gap(6).child(div().font_semibold().child(basename(rel))).child(div().text_color(t.ansi1).child(L("− lokal", "− local"))).child(div().text_color(t.ansi2).child("+ server"))))
+        .child(div().flex_1().min_w(0).truncate().text_size(this.sz(12)).child(h_flex().gap(6).child(div().font_semibold().child(basename(rel))).child(div().text_color(t.ansi1).child(L("− lokal", "− local"))).child(div().text_color(t.ansi2).child("+ server"))))
         .child(this.btn("d-up", "upload", L("Lokale Version hochladen", "Upload local version"), (_e, cx) => this.upload(rel, false, cx), t, { label: L("Hochladen", "Upload"), color: t.ansi2 }))
         .child(this.btn("d-dn", "download", L("Server-Version übernehmen", "Take server version"), (_e, cx) => this.download(rel, false, cx), t, { label: L("Übernehmen", "Take"), color: t.ansi4 }))
         .child(this.btn("d-edit", "file", L("Lokal bearbeiten", "Edit locally"), (_e, cx) => this.openFile(rel, cx), t)))
-      .child(this.diffError ? div().p(12).text_size(12).text_color(t.ansi1).child(this.diffError)
-        : !this.diff ? div().p(12).text_size(12).text_color(t.dim).child(L("Hole Server-Version…", "Fetching server version…"))
-        : div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(11.5)
+      .child(this.diffError ? div().p(12).text_size(this.sz(12)).text_color(t.ansi1).child(this.diffError)
+        : !this.diff ? div().p(12).text_size(this.sz(12)).text_color(t.dim).child(L("Hole Server-Version…", "Fetching server version…"))
+        : div().flex_1().min_h(0).relative().font_family(this.retroOn() ? DOS_FONT : settings().font_family ?? "JetBrains Mono").text_size(this.retroOn() ? 16 : 11.5)
           .child(v_virtual_list("201commander-diff", rows.length, 20, (i) => String(i), (range) => rows.slice(range.start, range.end).map(({ kind, number, text }) =>
             kind === "@" ? div().w_full().px(10).h(20).flex_none().truncate().bg(t.raised).text_color(t.dim).child(text)
               : h_flex().w_full().h(20).flex_none().gap(10).when(kind === "+", (e) => e.bg(t.ansi2 + "1c")).when(kind === "-", (e) => e.bg(t.ansi1 + "1c"))
@@ -672,14 +794,14 @@ export default class Commander extends View {
   footer(t) {
     if (this.confirm) {
       const c = this.confirm;
-      return h_flex().flex_none().px(10).py(7).gap(8).items_center().border_t(1).border_color(t.border).bg(t.raised).text_size(12)
+      return h_flex().flex_none().px(10).py(7).gap(8).items_center().border_t(1).border_color(t.border).bg(t.raised).text_size(this.sz(12))
         .child(div().flex_1().min_w(0).child(c.text))
         .child(this.btn("cf-no", "x", L("Abbrechen", "Cancel"), () => { this.confirm = null; }, t, { label: L("Abbrechen", "Cancel") }))
         .child(this.btn("cf-yes", "upload", c.yes, () => { this.confirm = null; c.action(); }, t, { solid: true, label: c.yes }));
     }
-    if (this.busy) return h_flex().flex_none().px(10).py(6).gap(8).items_center().border_t(1).border_color(t.border).text_size(12).text_color(t.muted)
+    if (this.busy) return h_flex().flex_none().px(10).py(6).gap(8).items_center().border_t(1).border_color(t.border).text_size(this.sz(12)).text_color(t.muted)
       .child(div().text_color(t.working).frames(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], 90)).child(div().flex_1().min_w(0).truncate().child(this.busy));
-    if (this.note) return h_flex().id("201commander-note").flex_none().px(10).py(6).gap(8).items_center().border_t(1).border_color(t.border).text_size(12)
+    if (this.note) return h_flex().id("201commander-note").flex_none().px(10).py(6).gap(8).items_center().border_t(1).border_color(t.border).text_size(this.sz(12))
       .text_color(this.note.level === "error" ? t.ansi1 : t.muted).cursor_pointer().on_click((_e, cx) => { this.note = null; cx.notify(); })
       .child(div().flex_1().min_w(0).truncate().child(this.note.text)).child(div().text_color(t.dim).child("×"));
     return null;
@@ -690,12 +812,17 @@ export default class Commander extends View {
     UI_DE = forced === "de" || forced === "en" ? forced === "de" : Boolean(this.autoDe);
     this.resolveRoots(cx);
     if (this.key() !== this.ctx?.key && !checking()) this.refresh(cx);
-    const t = theme(), overlay = props()?.overlay, wide = this.width >= 760;
+    const retro = this.retroOn(), t = this.pal(), overlay = props()?.overlay, wide = this.width >= 760;
+    if (this.editor && this.file && this.editorRetro !== retro && !this.rebuilding) {
+      this.rebuilding = true;
+      // EditorState.new can't run while rendering: wait for the next tick.
+      cx.spawn(async (cx) => { await cx.sleep(1); this.rebuilding = false; if (this.editor && this.file && this.editorRetro !== this.retroOn()) this.makeEditor(null, this.file, true); cx.notify(); });
+    }
     let content = null;
     try { content = this.view === "diff" && this.diffFile ? this.diffView(t, !wide) : this.view === "file" && this.file ? this.fileView(t, !wide) : null; }
-    catch (e) { content = div().p(12).text_size(12).text_color(t.ansi1).child(L(`Fehler: ${e?.message ?? e}`, `Error: ${e?.message ?? e}`)); }
+    catch (e) { content = div().p(12).text_size(this.sz(12)).text_color(t.ansi1).child(L(`Fehler: ${e?.message ?? e}`, `Error: ${e?.message ?? e}`)); }
     const footer = this.footer(t);
-    return v_flex().id("201commander").size_full().min_h(0).overflow_hidden().bg(t.background).text_color(t.foreground).text_size(13)
+    return v_flex().id("201commander").size_full().min_h(0).overflow_hidden().bg(t.background).text_color(t.foreground).text_size(this.sz(13))
       .when(!overlay, (e) => e.rounded(10).border_1().border_color(t.border))
       .track_focus(this.handle)
       .on_size_change((size, cx) => {
@@ -708,11 +835,22 @@ export default class Commander extends View {
         if (e.keystroke === "cmd-s" && this.view === "file") { this.save(cx); cx.stop_propagation(); }
         else if (e.key === "escape" && this.confirm) { this.confirm = null; cx.notify(); cx.stop_propagation(); }
       })
-      .child(this.header(t, overlay))
+      .when(retro, (e) => e.font_family(DOS_FONT).text_size(16).rounded(0).border_color(DOS.border))
+      .child(retro ? this.dosMenu(overlay) : this.header(t, overlay))
       .when(Boolean(this.sshOpen) && !this.on, (e) => e.child(this.sshBar(t)))
-      .child(h_flex().flex_1().min_h(0).items_start().on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .child(retro ? this.dosBody(t, content, wide) : h_flex().flex_1().min_h(0).items_start().on_mouse_down("left", (_e, cx) => cx.stop_propagation())
         .when(wide || !content, (e) => e.child(v_flex().h_full().min_h(0).when(wide && content, (x) => x.w(Math.min(360, Math.max(240, this.width * 0.32))).flex_none().border_r(1).border_color(t.border)).when(!(wide && content), (x) => x.flex_1().min_w(0)).child(this.tree(t))))
         .when(Boolean(content), (e) => e.child(content)))
-      .when(Boolean(footer), (e) => e.child(footer));
+      .when(Boolean(footer), (e) => e.child(footer))
+      .when(retro, (e) => e.child(this.dosPrompt()).child(this.dosKeys()));
+  }
+
+  dosBody(t, content, wide) {
+    const contentTitle = this.view === "diff" ? `Diff ${basename(this.diffFile ?? "")}` : basename(this.file ?? "");
+    const treeFrame = (grow) => this.dosFrame("dos-left", tilde(this.root) || "C:\\", !content, this.tree(t)).when(grow, (e) => e.flex_1());
+    return h_flex().flex_1().min_h(0).items_start().on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .when(wide && Boolean(content), (e) => e.child(treeFrame(false).w(Math.max(280, this.width * 0.36)).flex_none()))
+      .when(!content, (e) => e.child(treeFrame(true)))
+      .when(Boolean(content), (e) => e.child(this.dosFrame("dos-right", contentTitle, true, content).flex_1()));
   }
 }

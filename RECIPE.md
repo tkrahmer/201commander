@@ -13,6 +13,7 @@ A file browser for Herdr that opens on the active space's main folder. Edit file
 - Editor: Herdr's `Editor` with syntax colors from the theme and a dirty dot. Toolbar: save, Finder, open with the default app, copy path, diff, upload.
 - Diff: a unified diff, local (−) against server (+), in virtualized 20px rows, with upload and "take the server version".
 - Footer: a confirm bar before any overwrite, a progress line with a spinner, or the last message.
+- Retro mode (the monitor button, shared `201commander.retro`): a CGA palette (`#0000aa` background, `#55ffff` text, `#00aaaa` bar), the font `PxPlus IBM VGA 8x16` (shipped with Herdr 98) at 16px with no rounding. Layout: a cyan menu bar with "201Commander" in yellow on black, menu items Up / Dir / Pin / SSH / DE-EN / Modern, and a clock on the right. The panels are double-line frames (two nested 1px borders) with the title centered in the top line; the active one's title is black on cyan. Two panels side by side when wide: tree left, file or diff right. In the tree, folders are UPPERCASE white with "►SUB-DIR◄" (German "►ORDNER◄"), files are cyan, and the selection is a full-width cyan bar with black text. At the bottom sit a black command line `path>` with a blinking `_` (`.frames(["_", " "], 530)`) and the F1–F10 bar: a white number on black, then a black label on cyan.
 
 **How it behaves:**
 - Root: the git top level of the first terminal in the active space, else that terminal's folder, else `space.folder`. This is the folder Herdr names the space after. It changes with the space.
@@ -28,12 +29,14 @@ A file browser for Herdr that opens on the active space's main folder. Edit file
 - Everything that talks SSH runs through `hc(["exec", "--timeout", s, "--", ...])` in herdr-core, falling back to `exec`. On macOS the app itself can lack Local Network access (`host.local` fails with "No route to host"), and herdr-core has it.
 - SSH runs with `BatchMode=yes` and a ControlMaster socket at `~/.ssh/herdr-201commander-%C` with `ControlPersist=300`.
 - Uploads: a file goes as `ssh host 'mkdir -p dir && cat > file' < local`. A folder goes as `tar | ssh tar -x`, without `.git` and `.DS_Store`. Downloads use the reverse.
+- F-keys: `fkey(n)` does Lang, Finder, Diff, Edit, Upload, Get, Reload, Pin, SSH and Modern. It is reached by clicks in the key bar and by `nextCommand` `"f1"`…`"f10"` (the `mod:201commander` section of `keys.json`, which wins over Herdr's global F2 = tab.rename).
 - The optional `keys.json` binds ⌘⇧E to `pane.split` with the mod, and ⌘S inside the mod to `201commander.save`.
 
 **Watch out:**
 - SSH needs key or agent authentication. There is no password prompt (BatchMode).
 - Remote paths are single-quoted for the remote shell, except a leading `~/`, which becomes `"$HOME"/'…'` so that `~/site` works.
 - The class name can't start with a digit, so the module exports `class Commander` while the mod is named `201commander`.
+- `EditorState.new` throws while rendering. Rebuild the editor (font or wrap change) in an event handler, or after `await cx.sleep(1)` in a spawned task. Create the new state before releasing the old one, or a failure leaves a released state on screen.
 - `EditorState.soft_wrap` is fixed when the state is created. Crossing 760px rebuilds the editor, keeping the text and the selection.
 - A view that holds the editor needs `h_full()` inside the body's `h_flex`, or it lays out at zero height.
 - Text files only, up to 1 MiB (the `readTextFile` limit). Binary files open in the default app.
