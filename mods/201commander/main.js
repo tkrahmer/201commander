@@ -122,6 +122,8 @@ export default class Commander extends View {
     this.remoteInput = InputState.new({ placeholder: "/var/www/projekt" });
     this.hostInput.on("submit", (_e, cx) => this.connect(cx));
     this.remoteInput.on("submit", (_e, cx) => this.connect(cx));
+    this.promptInput = InputState.new({});
+    this.promptInput.on("submit", (_e, cx) => this.submitPrompt(cx));
     if (checking()) return;
     cx.spawn(async (cx) => { this.autoDe = await detectGerman(); cx.notify(); });
     this.refresh(cx);
@@ -160,9 +162,9 @@ export default class Commander extends View {
       case 3: if (rel && !dir && this.connected()) this.showDiff(rel, cx); break;
       case 4: if (rel && !dir && remote !== "remote") this.openFile(rel, cx); break;
       case 5: if (rel && remote !== "remote" && this.connected()) this.upload(rel, dir, cx); break;
-      case 6: if (rel && (remote === "remote" || remote === "diff") && this.connected()) this.download(rel, dir, cx); break;
-      case 7: this.refresh(cx); if (this.connected()) cx.spawn(async (cx) => { await this.compareAll(this.ctx, cx).catch(() => {}); cx.notify(); }); break;
-      case 8: { const following = !(this.pinned && this.pinned.space === (spaces().find((s) => s.active)?.id ?? null)); this.setPinned(following ? this.root : null, cx); break; }
+      case 6: this.openPrompt("rename", cx); break;
+      case 7: this.openPrompt("new", cx); break;
+      case 8: this.askDelete(cx); break;
       case 9: if (!this.on) this.sshOpen = !this.sshOpen; break;
       case 10: this.toggleRetro(cx); break;
     }
@@ -303,6 +305,109 @@ export default class Commander extends View {
     cx.notify();
   }
 
+  // ----- new, rename, delete -----
+  isRemoteOnly(rel) { return (this.remoteOnly.get(dirname(rel)) ?? []).some((e) => e.name === basename(rel)); }
+  reloadAll(cx) { this.refresh(cx); if (this.connected()) cx.spawn(async (cx) => { await this.compareAll(this.ctx, cx).catch(() => {}); cx.notify(); }); }
+  togglePin(cx) { const following = !(this.pinned && this.pinned.space === (spaces().find((s) => s.active)?.id ?? null)); this.setPinned(following ? this.root : null, cx); }
+
+  // kind: "new" (a trailing / makes a folder), "folder", "rename".
+  openPrompt(kind, cx) {
+    if (this.on || !this.root) return;
+    const sel = this.sel ?? (this.view === "file" ? this.file : null);
+    let rel, value = "";
+    if (kind === "rename") {
+      if (!sel || this.isRemoteOnly(sel)) return;
+      rel = sel; value = basename(sel);
+    } else rel = sel && !this.isRemoteOnly(sel) ? (this.isDir(sel) ? sel : dirname(sel)) : "";
+    this.confirm = null; this.prompt = { kind, rel };
+    this.promptInput.set_value(value);
+    if (kind === "rename") { const dot = value.lastIndexOf("."); try { this.promptInput.set_selected_range({ start: 0, end: dot > 0 ? dot : value.length }); } catch {} }
+    this.promptInput.focus();
+    cx.notify();
+  }
+
+  closePrompt(cx) { this.prompt = null; this.treeHandle.focus(); cx.notify(); }
+
+  submitPrompt(cx) {
+    const p = this.prompt;
+    if (!p) return;
+    let name = this.promptInput.value().trim();
+    const folder = p.kind === "folder" || (p.kind === "new" && name.endsWith("/"));
+    name = name.replace(/\/+$/, "");
+    if (!name || name.startsWith("/") || name.split("/").some((part) => part === ".." || part === ".") || name.includes("\0")) {
+      this.note = { text: L("Ungültiger Name", "Invalid name"), level: "error" }; cx.notify(); return;
+    }
+    const ctx = this.ctx, root = this.root;
+    const target = p.kind === "rename" ? join(dirname(p.rel), name).replace(/^\//, "") : join(p.rel, name).replace(/^\//, "");
+    if (p.kind === "rename" && target === p.rel) { this.closePrompt(cx); return; }
+    // Exit 17: the target exists. A rename that only changes case is allowed (case-insensitive disks).
+    const script = p.kind === "rename"
+      ? 'if [ "$3" != same ] && { [ -e "$2" ] || [ -L "$2" ]; }; then exit 17; fi; mkdir -p -- "$(dirname -- "$2")" && mv -- "$1" "$2"'
+      : folder ? '{ [ -e "$1" ] || [ -L "$1" ]; } && exit 17; mkdir -p -- "$1"'
+      : '{ [ -e "$1" ] || [ -L "$1" ]; } && exit 17; mkdir -p -- "$(dirname -- "$1")" && : > "$1"';
+    const args = p.kind === "rename" ? [join(root, p.rel), join(root, target), p.rel.toLowerCase() === target.toLowerCase() ? "same" : "other"] : [join(root, target)];
+    this.prompt = null;
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec("sh", ["-c", script, "x", ...args]);
+        if (r.code === 17) throw new Error(L(`„${basename(target)}“ gibt es schon`, `“${basename(target)}” already exists`));
+        if (r.code !== 0) throw new Error((r.stderr || `Exit ${r.code}`).trim().split("\n").pop());
+        if (this.ctx !== ctx) return;
+        if (p.kind === "rename") {
+          const move = (x) => (x === p.rel ? target : x?.startsWith(p.rel + "/") ? target + x.slice(p.rel.length) : x);
+          this.folders = new Set([...this.folders].map(move));
+          for (const k of [...this.entries.keys()]) if (k === p.rel || k.startsWith(p.rel + "/")) this.entries.delete(k);
+          this.file = move(this.file); this.diffFile = move(this.diffFile);
+          this.note = { text: L(`Umbenannt: ${basename(p.rel)} → ${basename(target)}`, `Renamed ${basename(p.rel)} → ${basename(target)}`), level: "ok" };
+        } else this.note = { text: L(`Angelegt: ${target}${folder ? "/" : ""}`, `Created ${target}${folder ? "/" : ""}`), level: "ok" };
+        // Show it: open the folders on its way, select it, open a new file in the editor.
+        const parts = target.split("/"); parts.pop();
+        for (let i = 1; i <= parts.length; i++) { const d = parts.slice(0, i).join("/"); if (!this.folders.has(d)) this.toggle(d, cx); }
+        this.sel = target;
+        this.refresh(cx);
+        if (p.kind !== "rename" && !folder) this.openFile(target, cx);
+        if (this.connected()) await this.compareFolder(dirname(target), ctx).catch(() => {});
+      } catch (e) { this.note = { text: String(e.message ?? e), level: "error" }; }
+      finally { this.treeHandle.focus(); cx.notify(); }
+    });
+    cx.notify();
+  }
+
+  askDelete(cx) {
+    const rel = this.sel ?? (this.view === "file" ? this.file : null);
+    if (this.on || !rel || this.isRemoteOnly(rel)) return;
+    const dir = this.isDir(rel);
+    this.ask(dir ? L(`Ordner „${basename(rel)}“ samt Inhalt in den Papierkorb legen?`, `Move folder “${basename(rel)}” and its contents to the Trash?`)
+      : L(`„${basename(rel)}“ in den Papierkorb legen?`, `Move “${basename(rel)}” to the Trash?`), L("Löschen", "Delete"), () => this.trash(rel, cx), "trash");
+    cx.notify();
+  }
+
+  trash(rel, cx) {
+    const ctx = this.ctx;
+    // macOS's trash keeps "Put Back"; elsewhere move it into ~/.Trash under a free name.
+    // No "--" for trash: it takes that as a file name. The path is absolute, so it can't look like an option.
+    const script = 'case "$1" in /*) ;; *) exit 2;; esac; if [ -x /usr/bin/trash ]; then /usr/bin/trash "$1"; else n=${1##*/}; d="$HOME/.Trash/$n"; [ -e "$d" ] && d="$HOME/.Trash/$n $(date +%H.%M.%S)"; mkdir -p "$HOME/.Trash" && mv -- "$1" "$d"; fi';
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec("sh", ["-c", script, "x", this.abs(rel)]);
+        if (r.code !== 0) throw new Error((r.stderr || `Exit ${r.code}`).trim().split("\n").pop());
+        if (this.ctx !== ctx) return;
+        const gone = (x) => x === rel || x?.startsWith(rel + "/");
+        if (gone(this.file)) { this.closeFile(); this.view = "tree"; }
+        if (gone(this.diffFile)) { this.diffFile = null; if (this.view === "diff") this.view = "tree"; }
+        for (const f of [...this.folders]) if (gone(f)) this.folders.delete(f);
+        // Keep the bar on the neighbour below (or above).
+        const list = this.flat ?? [], i = list.findIndex((r) => r.path === rel);
+        const next = list.slice(i + 1).find((r) => !gone(r.path)) ?? list.slice(0, Math.max(0, i)).reverse().find((r) => !gone(r.path));
+        this.sel = next?.path ?? null;
+        this.note = { text: L(`In den Papierkorb gelegt: ${basename(rel)}`, `Moved to the Trash: ${basename(rel)}`), level: "ok" };
+        this.refresh(cx);
+        if (this.connected()) await this.compareFolder(dirname(rel), ctx).catch(() => {});
+      } catch (e) { this.note = { text: L(`Löschen fehlgeschlagen: ${e.message ?? e}`, `Delete failed: ${e.message ?? e}`), level: "error" }; }
+      finally { this.treeHandle.focus(); cx.notify(); }
+    });
+  }
+
   // ----- keyboard: arrows, Enter, Backspace, Tab (file-commander style) -----
   navKey(key, cx) {
     const list = this.flat ?? [];
@@ -334,6 +439,7 @@ export default class Commander extends View {
         if (cur.dir) this.toggle(cur.path, cx); else this.openFile(cur.path, cx);
         break;
       case "backspace": if (this.root && !this.on) this.setPinned(dirname(this.root) || "/", cx); break;
+      case "delete": this.askDelete(cx); break;
       case "tab": if (this.editor && this.view === "file") this.editor.focus(); else return false; break;
       default: return false;
     }
@@ -345,7 +451,7 @@ export default class Commander extends View {
 
   guard(action) {
     if (!this.dirty) return action();
-    this.ask(L(`Ungespeicherte Änderungen in ${basename(this.file)} verwerfen?`, `Discard unsaved changes in ${basename(this.file)}?`), L("Verwerfen", "Discard"), action);
+    this.ask(L(`Ungespeicherte Änderungen in ${basename(this.file)} verwerfen?`, `Discard unsaved changes in ${basename(this.file)}?`), L("Verwerfen", "Discard"), action, "x");
   }
 
   openFile(rel, cx) {
@@ -586,7 +692,7 @@ export default class Commander extends View {
   }
 
   // ----- confirm bar -----
-  ask(text, yes, action) { this.confirm = { text, yes, action }; }
+  ask(text, yes, action, icon = "upload") { this.confirm = { text, yes, action, icon }; }
 
   // ---------- rendering ----------
   icon(name, t, size = 14, color) { return svg(M + name + ".svg").size(size).flex_none().text_color(color ?? t.muted); }
@@ -654,6 +760,10 @@ export default class Commander extends View {
     }
     if (!this.on) a.push(this.btn(`fi-${path}`, "finder", L("Im Finder zeigen", "Show in Finder"), () => this.finder(path, false), t));
     if (entry.dir) a.push(this.btn(`te-${path}`, "terminal", L("Terminal hier öffnen", "Open terminal here"), () => this.terminalHere(path), t));
+    if (!this.on) {
+      a.push(this.btn(`rn-${path}`, "pencil", L("Umbenennen (F6)", "Rename (F6)"), (_e, cx) => { this.sel = path; this.openPrompt("rename", cx); }, t));
+      a.push(this.btn(`rm-${path}`, "trash", L("In den Papierkorb (F8, ⌘⌫)", "Move to Trash (F8, ⌘⌫)"), (_e, cx) => { this.sel = path; this.askDelete(cx); }, t));
+    }
     if (conn) {
       if (!entry.dir && status === "diff") a.push(this.btn(`df-${path}`, "diff", L("Mit Server vergleichen", "Compare with server"), (_e, cx) => this.showDiff(path, cx), t, { color: t.blocked }));
       if (status === "diff" && !entry.dir) a.push(this.btn(`dn-${path}`, "download", L("Server-Version holen", "Get server version"), (_e, cx) => this.download(path, false, cx), t));
@@ -703,7 +813,8 @@ export default class Commander extends View {
       .child(div().px(10).h_full().flex().items_center().bg(DOS.black).text_color(DOS.yellow).flex_none().child("201Commander"))
       .child(item("m-up", L("Hoch", "Up"), L("Übergeordneter Ordner", "Parent folder"), (cx) => this.root && this.setPinned(dirname(this.root) || "/", cx), Boolean(this.root) && !this.on))
       .child(item("m-dir", L("Ordner", "Dir"), L("Ordner wählen…", "Choose folder…"), (cx) => cx.spawn(async (cx) => { const p = await pickFolder({ prompt: L("Öffnen", "Open") }); if (p) this.setPinned(p, cx); })))
-      .child(item("m-pin", following ? L("Fixieren", "Pin") : L("Haupt", "Main"), following ? L("Hauptordner des Space – klicken zum Fixieren", "Space main folder – click to pin") : L("Fixiert – klicken für den Hauptordner des Space", "Pinned – click for the space main folder"), (cx) => this.fkey(8, cx)))
+      .child(item("m-pin", following ? L("Fixieren", "Pin") : L("Haupt", "Main"), following ? L("Hauptordner des Space – klicken zum Fixieren", "Space main folder – click to pin") : L("Fixiert – klicken für den Hauptordner des Space", "Pinned – click for the space main folder"), (cx) => this.togglePin(cx)))
+      .child(item("m-reload", L("Aktual.", "Reload"), L("Neu laden und vergleichen", "Reload and compare"), (cx) => this.reloadAll(cx)))
       .child(item("m-ssh", this.conn.state === "ok" ? "SSH ✓" : "SSH", L("SSH-Server verbinden / vergleichen", "Connect / compare SSH server"), (cx) => this.fkey(9, cx), !this.on))
       .child(item("m-lang", UI_DE ? "DE" : "EN", L("Sprache umschalten", "Switch language"), (cx) => this.fkey(1, cx)))
       .child(item("m-modern", L("Modern", "Modern"), L("Zurück zum normalen Design", "Back to the normal look"), (cx) => this.toggleRetro(cx)))
@@ -714,7 +825,7 @@ export default class Commander extends View {
 
   dosKeys() {
     const keys = [[1, L("Sprache", "Lang")], [2, "Finder"], [3, "Diff"], [4, L("Bearb.", "Edit")], [5, L("Hoch", "Upload")],
-      [6, L("Runter", "Get")], [7, L("Neu", "Reload")], [8, L("Fix", "Pin")], [9, "SSH"], [10, "Modern"]];
+      [6, L("Umben.", "Rename")], [7, L("Neu", "New")], [8, L("Lösch.", "Delete")], [9, "SSH"], [10, "Modern"]];
     return h_flex().h(20).flex_none().bg(DOS.black).children(keys.map(([n, label]) =>
       h_flex().id(`fk-${n}`).flex_1().min_w(0).h_full().cursor_pointer()
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
@@ -735,6 +846,8 @@ export default class Commander extends View {
       .child(div().font_semibold().pr(6).child("201Commander"))
       .child(div().flex_1().min_w(0).truncate().text_size(this.sz(12)).text_color(t.dim).child(tilde(this.root) || L("Kein Ordner", "No folder")))
       .child(this.btn("h-up", "up", L("Übergeordneter Ordner", "Parent folder"), (_e, cx) => this.root && this.setPinned(dirname(this.root) || "/", cx), t, { enabled: Boolean(this.root) && !this.on }))
+      .child(this.btn("h-newfile", "file-plus", L("Neue Datei (F7)", "New file (F7)"), (_e, cx) => this.openPrompt("new", cx), t, { enabled: Boolean(this.root) && !this.on }))
+      .child(this.btn("h-newdir", "folder-plus", L("Neuer Ordner", "New folder"), (_e, cx) => this.openPrompt("folder", cx), t, { enabled: Boolean(this.root) && !this.on }))
       .child(this.btn("h-pick", "folder-open", L("Ordner wählen…", "Choose folder…"), (_e, cx) => cx.spawn(async (cx) => { const p = await pickFolder({ prompt: L("Öffnen", "Open") }); if (p) this.setPinned(p, cx); }), t))
       .child(this.btn("h-follow", following ? "crosshair" : "pin", following ? L("Hauptordner des Space – klicken zum Fixieren", "Space main folder – click to pin") : L("Fixiert – klicken für den Hauptordner des Space", "Pinned – click for the space main folder"), (_e, cx) => this.setPinned(following ? this.root : null, cx), t, { color: following ? t.accent : t.blocked, enabled: Boolean(this.root || this.pinned) }))
       .child(this.btn("h-refresh", "refresh", L("Neu laden", "Reload"), (_e, cx) => { this.refresh(cx); if (this.connected()) cx.spawn(async (cx) => { await this.compareAll(this.ctx, cx); cx.notify(); }); }, t))
@@ -782,6 +895,7 @@ export default class Commander extends View {
         .track_focus(this.treeHandle).track_scroll(this.treeScroll)
         .on_key_down((e, cx) => {
           const m = e.modifiers ?? {};
+          if (e.keystroke === "cmd-backspace") { this.askDelete(cx); cx.stop_propagation(); return; }
           if (m.platform || m.control || m.alt) return;
           if (this.navKey(e.key, cx)) { cx.stop_propagation(); cx.notify(); }
         })
@@ -838,12 +952,27 @@ export default class Commander extends View {
   }
 
   footer(t) {
+    if (this.prompt) {
+      const p = this.prompt, where = p.kind === "rename" ? basename(p.rel) : (p.rel ? p.rel + "/" : "./");
+      const label = p.kind === "rename" ? L(`Umbenennen ${where} in:`, `Rename ${where} to:`)
+        : p.kind === "folder" ? L(`Neuer Ordner in ${where}:`, `New folder in ${where}:`)
+        : L(`Neu in ${where} (Ordner: / am Ende):`, `New in ${where} (folder: end with /):`);
+      return h_flex().flex_none().px(10).py(6).gap(8).items_center().border_t(1).border_color(t.border).bg(t.raised).text_size(this.sz(12))
+        .child(div().flex_none().max_w(260).truncate().child(label))
+        .child(div().id("prompt-field").flex_1().min_w(80).h(28).px(8).flex().items_center().border_1().border_color(t.accent).bg(t.background).cursor_text()
+          .when(!this.retroOn(), (e) => e.rounded(6))
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_key_down((e, cx) => { if (e.key === "escape") { cx.stop_propagation(); this.closePrompt(cx); } })
+          .child(Input.new(this.promptInput).h_full().text_size(this.sz(12)).text_color(t.foreground)))
+        .child(this.btn("pr-no", "x", L("Abbrechen", "Cancel"), (_e, cx) => this.closePrompt(cx), t, { label: L("Abbrechen", "Cancel") }))
+        .child(this.btn("pr-yes", p.kind === "rename" ? "pencil" : "file-plus", "OK", (_e, cx) => this.submitPrompt(cx), t, { solid: true, label: "OK" }));
+    }
     if (this.confirm) {
       const c = this.confirm;
       return h_flex().flex_none().px(10).py(7).gap(8).items_center().border_t(1).border_color(t.border).bg(t.raised).text_size(this.sz(12))
         .child(div().flex_1().min_w(0).child(c.text))
         .child(this.btn("cf-no", "x", L("Abbrechen", "Cancel"), () => { this.confirm = null; }, t, { label: L("Abbrechen", "Cancel") }))
-        .child(this.btn("cf-yes", "upload", c.yes, () => { this.confirm = null; c.action(); }, t, { solid: true, label: c.yes }));
+        .child(this.btn("cf-yes", c.icon ?? "upload", c.yes, () => { this.confirm = null; c.action(); }, t, { solid: true, label: c.yes }));
     }
     if (this.busy) return h_flex().flex_none().px(10).py(6).gap(8).items_center().border_t(1).border_color(t.border).text_size(this.sz(12)).text_color(t.muted)
       .child(div().text_color(t.working).frames(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], 90)).child(div().flex_1().min_w(0).truncate().child(this.busy));
@@ -879,6 +1008,7 @@ export default class Commander extends View {
       })
       .on_key_down((e, cx) => {
         if (e.keystroke === "cmd-s" && this.view === "file") { this.save(cx); cx.stop_propagation(); }
+        else if (e.key === "escape" && this.prompt) { this.closePrompt(cx); cx.stop_propagation(); }
         else if (e.key === "escape" && this.confirm) { this.confirm = null; cx.notify(); cx.stop_propagation(); }
         else if (e.key === "escape" && this.view !== "tree") {
           if (this.view === "diff") this.view = this.file ? "file" : "tree";

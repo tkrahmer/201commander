@@ -14,6 +14,7 @@
 |---|---|
 | 📁 **Browse** | A file tree that opens on the active space's main folder, the repository Herdr names the space after. Git status marks (A/M/D/U) are shown next to files. |
 | ✏️ **Edit** | Click a file to edit it with syntax highlighting. **⌘S** saves. If the file changed on disk in the meantime, you choose between reload and overwrite. |
+| 🗂️ **Files & folders** | Create files and folders, rename and delete them. Deleted items go to the macOS **Trash**, so “Put Back” works. |
 | 🔍 **Finder** | Reveal a file or folder in Finder, open it with its default app, copy its path, or open a terminal there. |
 | 🔌 **SSH mirror** | Map the local folder to a folder on a server with the same structure. 201Commander compares both sides (md5) and marks every file: `≠` differs, `↑` local only, `↓` only on the server. |
 | ↔️ **Diff & transfer** | See a diff of local against server, upload a file or folder, take the server version, or upload all differences at once. It asks before anything gets overwritten. |
@@ -42,6 +43,8 @@ Click into the list once, then:
 | ← | Close the folder, or jump to its parent |
 | Enter | Open the file / open or close the folder |
 | ⌫ Backspace | Go up to the parent folder (like `..`) |
+| ⌘⌫ / Delete | Move the selection to the Trash (asks first) |
+| F6 / F7 / F8 | Rename / new (end with `/` for a folder) / delete |
 | Tab / Esc | Into the editor / back to the list |
 
 ### Retro mode
@@ -52,9 +55,9 @@ Click the monitor icon in the header (or press **F10** in retro mode to go back)
 
 | Key | Action | Key | Action |
 |---|---|---|---|
-| F1 | Language EN/DE | F6 | Get the server version |
-| F2 | Show in Finder | F7 | Reload and compare again |
-| F3 | Diff with the server | F8 | Pin / back to the main folder |
+| F1 | Language EN/DE | F6 | Rename |
+| F2 | Show in Finder | F7 | New file (end with `/` for a folder) |
+| F3 | Diff with the server | F8 | Delete (to the Trash) |
 | F4 | Edit the selected file | F9 | SSH bar |
 | F5 | Upload | F10 | Back to the modern look |
 
@@ -152,7 +155,7 @@ Apache-2.0, like Herdr. See [NOTICE](NOTICE) for the parts adapted from Herdr's 
 
 ## Deutsch
 
-**201Commander** ist ein Datei-Commander für Herdr. Er öffnet den Hauptordner des aktiven Space und zeigt die Dateien als Baum. Du kannst Dateien direkt bearbeiten (**⌘S** speichert), sie im Finder zeigen und einen Server-Ordner mit gleicher Struktur per SSH vergleichen. Dabei bedeutet `≠` unterschiedlich, `↑` nur lokal und `↓` nur auf dem Server. Außerdem gibt es einen Diff, Hochladen, Server-Version übernehmen und „Alle hoch“. Vor jedem Überschreiben fragt er nach. Die Sprache folgt macOS, der Button **EN/DE** im Kopf schaltet um. Das Monitor-Symbol schaltet in den **Retro-Modus**: blaues DOS-Design mit Doppelrahmen, Pixel-Schrift und funktionierender F1–F10-Leiste (F10 schaltet zurück). Mit den Pfeiltasten bewegst du dich durch die Liste, Enter öffnet, → und ← klappen Ordner auf und zu, ⌫ geht eine Ebene höher, Tab springt in den Editor und Esc zurück.
+**201Commander** ist ein Datei-Commander für Herdr. Er öffnet den Hauptordner des aktiven Space und zeigt die Dateien als Baum. Du kannst Dateien direkt bearbeiten (**⌘S** speichert), sie im Finder zeigen und einen Server-Ordner mit gleicher Struktur per SSH vergleichen. Dabei bedeutet `≠` unterschiedlich, `↑` nur lokal und `↓` nur auf dem Server. Außerdem gibt es einen Diff, Hochladen, Server-Version übernehmen und „Alle hoch“. Vor jedem Überschreiben fragt er nach. Die Sprache folgt macOS, der Button **EN/DE** im Kopf schaltet um. Das Monitor-Symbol schaltet in den **Retro-Modus**: blaues DOS-Design mit Doppelrahmen, Pixel-Schrift und funktionierender F1–F10-Leiste (F10 schaltet zurück). Dateien und Ordner legst du mit F7 an (oder mit den Buttons im Kopf), F6 benennt um, F8 bzw. ⌘⌫ legt in den Papierkorb (mit Rückfrage). Mit den Pfeiltasten bewegst du dich durch die Liste, Enter öffnet, → und ← klappen Ordner auf und zu, ⌫ geht eine Ebene höher, Tab springt in den Editor und Esc zurück.
 
 **Installation:** Bitte einen Agenten in Herdr: *„Füge den Herdr-Mod von https://github.com/tkrahmer/201commander hinzu“*. Oder von Hand:
 
