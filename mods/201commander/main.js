@@ -1,14 +1,14 @@
-// Explorer: a file browser + editor for the active space's main folder (or a pinned one),
+// 201Commander: a file browser + editor for the active space's main folder (or a pinned one),
 // with "Show in Finder" and an SSH mirror: map the local folder onto a remote folder
 // with the same structure, compare files (md5), diff, upload and download.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme, settings, pickFolder, shared, setShared, notify, props, closeOverlay, nextCommand, run, home, checking } from "herdr";
 
-const M = "mods/explorer/icons/";
+const M = "mods/201commander/icons/";
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", cjs: "js", toml: "yaml", yml: "yaml", jsonc: "json", svelte: "html", vue: "html", twig: "html", htm: "html", php: "php", sh: "bash", zsh: "bash" };
 const PER_FOLDER = 500, TOTAL = 5000;
-const SSH_KEY = "explorer.ssh", HOSTS_KEY = "explorer.hosts";
+const SSH_KEY = "201commander.ssh", HOSTS_KEY = "201commander.hosts";
 
 // ---------- helpers ----------
 const q = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
@@ -24,7 +24,7 @@ function sshArgs(spec) {
   const m = /^(.*?):(\d+)$/.exec(host);
   if (m) { host = m[1]; port = m[2]; }
   return ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "ServerAliveInterval=15",
-    "-o", "ControlMaster=auto", "-o", `ControlPath=${home()}/.ssh/herdr-explorer-%C`, "-o", "ControlPersist=300",
+    "-o", "ControlMaster=auto", "-o", `ControlPath=${home()}/.ssh/herdr-201commander-%C`, "-o", "ControlPersist=300",
     ...(port ? ["-p", port] : []), host];
 }
 const ssh = (spec, command, timeout = 60000) => exec("ssh", [...sshArgs(spec), command], { timeout });
@@ -42,7 +42,7 @@ const LIST = 'n=0; for p in "$1"/* "$1"/.[!.]* "$1"/..?*; do [ -e "$p" ] || [ -L
 const HASH = 'cd "$1" 2>/dev/null || exit 3; if command -v md5sum >/dev/null 2>&1; then h() { md5sum < "$1" | cut -c1-32; }; else h() { md5 -q "$1"; }; fi; n=0; for p in * .[!.]* ..?*; do [ -e "$p" ] || continue; [ "$p" = .git ] && continue; [ "$p" = .DS_Store ] && continue; if [ -d "$p" ]; then printf "d\\0%s\\0-\\0" "$p"; else printf "f\\0%s\\0%s\\0" "$p" "$(h "$p" 2>/dev/null)"; fi; n=$((n+1)); [ "$n" -gt 1000 ] && break; done; exit 0';
 
 async function listFolder(path, on) {
-  const r = await exec("sh", ["-c", LIST, "explorer", path], { on });
+  const r = await exec("sh", ["-c", LIST, "201commander", path], { on });
   if (r.code !== 0) throw new Error(r.stderr || "Ordner kann nicht gelesen werden");
   const f = r.stdout.split("\0"), out = [];
   for (let i = 0; i + 1 < f.length; i += 2) out.push({ name: f[i + 1], dir: f[i] === "d" });
@@ -69,7 +69,7 @@ function diffRows(text) {
 }
 
 // ---------- the view ----------
-export default class Explorer extends View {
+export default class Commander extends View {
   init(_props, cx) {
     this.handle = cx.focus_handle();
     this.pinned = null; this.gitRoots = new Map(); this.pendingRoots = [];
@@ -409,7 +409,7 @@ export default class Explorer extends View {
     const c = this.cfg(), args = sshArgs(c.host), remote = join(c.remote, rel), local = this.abs(rel);
     const work = () => dir
       ? exec("sh", ["-c", 'd=$1; shift; mkdir -p "$d" && ssh "$@" | tar -C "$d" -xf -', "x", dirname(local), ...args, `tar -C ${q(dirname(remote) || "/")} -cf - ${q("./" + basename(rel))}`], { timeout: 600000 })
-      : exec("sh", ["-c", 'f=$1; shift; mkdir -p "$(dirname "$f")" && ssh "$@" > "$f.explorer-part" && mv "$f.explorer-part" "$f" || { rm -f "$f.explorer-part"; exit 1; }', "x", local, ...args, `cat ${q(remote)}`], { timeout: 600000 });
+      : exec("sh", ["-c", 'f=$1; shift; mkdir -p "$(dirname "$f")" && ssh "$@" > "$f.201commander-part" && mv "$f.201commander-part" "$f" || { rm -f "$f.201commander-part"; exit 1; }', "x", local, ...args, `cat ${q(remote)}`], { timeout: 600000 });
     const go = () => this.transfer(`Lade ${basename(rel)} herunter…`, rel, async () => {
       const r = await work();
       if (r.code === 0 && this.file === rel) this.reload(cx);
@@ -544,7 +544,7 @@ export default class Explorer extends View {
   header(t, overlay) {
     const following = !(this.pinned && this.pinned.space === (spaces().find((s) => s.active)?.id ?? null));
     return h_flex().h(40).flex_none().pl(overlay ? 12 : 10).pr(6).gap(2).items_center().border_b(1).border_color(t.border).bg(t.chrome)
-      .child(div().font_semibold().pr(6).child("Explorer"))
+      .child(div().font_semibold().pr(6).child("201Commander"))
       .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(tilde(this.root) || "Kein Ordner"))
       .child(this.btn("h-up", "up", "Übergeordneter Ordner", (_e, cx) => this.root && this.setPinned(dirname(this.root) || "/", cx), t, { enabled: Boolean(this.root) && !this.on }))
       .child(this.btn("h-pick", "folder-open", "Ordner wählen…", (_e, cx) => cx.spawn(async (cx) => { const p = await pickFolder({ prompt: "Öffnen" }); if (p) this.setPinned(p, cx); }), t))
@@ -583,10 +583,10 @@ export default class Explorer extends View {
   tree(t) {
     const rows = this.rows("", 0, [], t);
     return div().flex_1().min_h(0).relative()
-      .child(v_flex().id("explorer-tree").absolute().inset_0().overflow_y_scroll().p(5).children(rows)
+      .child(v_flex().id("201commander-tree").absolute().inset_0().overflow_y_scroll().p(5).children(rows)
         .when(Boolean(this.error) || !rows.length, (e) => e.child(div().p(8).text_size(12).text_color(this.error ? t.ansi1 : t.dim).child(this.error || (this.loading ? "Lade…" : this.root ? "Leerer Ordner" : "Kein Ordner – Ordner wählen oder ein Terminal fokussieren"))))
         .when(this.limited, (e) => e.child(div().p(8).text_size(11).text_color(t.dim).child("Liste begrenzt auf 500 Einträge pro Ordner / 5.000 gesamt"))))
-      .child(Scrollbar.vertical("explorer-tree").absolute().inset_0());
+      .child(Scrollbar.vertical("201commander-tree").absolute().inset_0());
   }
 
   fileView(t, narrow) {
@@ -627,13 +627,13 @@ export default class Explorer extends View {
       .child(this.diffError ? div().p(12).text_size(12).text_color(t.ansi1).child(this.diffError)
         : !this.diff ? div().p(12).text_size(12).text_color(t.dim).child("Hole Server-Version…")
         : div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(11.5)
-          .child(v_virtual_list("explorer-diff", rows.length, 20, (i) => String(i), (range) => rows.slice(range.start, range.end).map(({ kind, number, text }) =>
+          .child(v_virtual_list("201commander-diff", rows.length, 20, (i) => String(i), (range) => rows.slice(range.start, range.end).map(({ kind, number, text }) =>
             kind === "@" ? div().w_full().px(10).h(20).flex_none().truncate().bg(t.raised).text_color(t.dim).child(text)
               : h_flex().w_full().h(20).flex_none().gap(10).when(kind === "+", (e) => e.bg(t.ansi2 + "1c")).when(kind === "-", (e) => e.bg(t.ansi1 + "1c"))
                 .child(div().w(34).flex_none().text_right().text_color(t.dim).child(number === undefined ? "" : String(number)))
                 .child(div().w(10).flex_none().text_color(kind === "+" ? t.ansi2 : kind === "-" ? t.ansi1 : t.dim).child(kind === " " ? "" : kind))
                 .child(div().flex_1().min_w(0).truncate().child(text)))).size_full())
-          .child(Scrollbar.vertical("explorer-diff").viewport_from_layout().absolute().inset_0()));
+          .child(Scrollbar.vertical("201commander-diff").viewport_from_layout().absolute().inset_0()));
   }
 
   footer(t) {
@@ -646,7 +646,7 @@ export default class Explorer extends View {
     }
     if (this.busy) return h_flex().flex_none().px(10).py(6).gap(8).items_center().border_t(1).border_color(t.border).text_size(12).text_color(t.muted)
       .child(div().text_color(t.working).frames(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], 90)).child(div().flex_1().min_w(0).truncate().child(this.busy));
-    if (this.note) return h_flex().id("explorer-note").flex_none().px(10).py(6).gap(8).items_center().border_t(1).border_color(t.border).text_size(12)
+    if (this.note) return h_flex().id("201commander-note").flex_none().px(10).py(6).gap(8).items_center().border_t(1).border_color(t.border).text_size(12)
       .text_color(this.note.level === "error" ? t.ansi1 : t.muted).cursor_pointer().on_click((_e, cx) => { this.note = null; cx.notify(); })
       .child(div().flex_1().min_w(0).truncate().child(this.note.text)).child(div().text_color(t.dim).child("×"));
     return null;
@@ -660,7 +660,7 @@ export default class Explorer extends View {
     try { content = this.view === "diff" && this.diffFile ? this.diffView(t, !wide) : this.view === "file" && this.file ? this.fileView(t, !wide) : null; }
     catch (e) { content = div().p(12).text_size(12).text_color(t.ansi1).child(`Fehler: ${e?.message ?? e}`); }
     const footer = this.footer(t);
-    return v_flex().id("explorer").size_full().min_h(0).overflow_hidden().bg(t.background).text_color(t.foreground).text_size(13)
+    return v_flex().id("201commander").size_full().min_h(0).overflow_hidden().bg(t.background).text_color(t.foreground).text_size(13)
       .when(!overlay, (e) => e.rounded(10).border_1().border_color(t.border))
       .track_focus(this.handle)
       .on_size_change((size, cx) => {

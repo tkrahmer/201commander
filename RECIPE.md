@@ -1,12 +1,12 @@
-# Explorer
+# 201Commander
 
 A file browser for Herdr that opens on the active space's main folder. Edit files in place, jump to Finder, and mirror the folder onto an SSH server with the same structure: compare files, view a diff, upload or download with one click. The UI is in German.
 
-![Explorer](preview.png)
+![201Commander](preview.png)
 
 **What you see:**
-- It works as a pane (`pane.split {mod: "explorer"}`, ⌘⇧E with the bundled `keys.json`), as a side panel block, or as a window (`mod.open explorer`; `mod.json` sets `overlay: {kind: "window", key: "explorer", width: 0.62, height: 0.82}`).
-- Header (40px, `chrome` background): the title "Explorer", the root path (shortened with `~`) and icon buttons. From left to right: parent folder, pick a folder, main folder / pin (crosshair in `accent` while on the space's main folder, pin in `blocked` while pinned), reload, open in Finder, SSH (green when connected, red on error), and × (only in a window).
+- It works as a pane (`pane.split {mod: "201commander"}`, ⌘⇧E with the bundled `keys.json`), as a side panel block, or as a window (`mod.open 201commander`; `mod.json` sets `overlay: {kind: "window", key: "201commander", width: 0.62, height: 0.82}`).
+- Header (40px, `chrome` background): the title "201Commander", the root path (shortened with `~`) and icon buttons. From left to right: parent folder, pick a folder, main folder / pin (crosshair in `accent` while on the space's main folder, pin in `blocked` while pinned), reload, open in Finder, SSH (green when connected, red on error), and × (only in a window).
 - SSH bar, toggled by the SSH button: inputs for the host (`user@host[:port]`) and the remote path, a "Verbinden" (connect) button, a status dot, the counters `≠ n` (differs), `↑ n` (local only) and `↓ n` (server only), re-compare, and "Alle hoch" (upload all).
 - Tree (28px rows): chevron, folder/file icon, name, git mark (A/M/D/U) and compare badge (`≠` in `blocked`, `↑` in `ansi2`, `↓` in `ansi4`). Server-only entries are dimmed. The selected row shows its actions: Finder, terminal here, diff, get the server version, upload.
 - At 760px or wider, the tree sits on the left (240–360px) with the editor or diff on the right, and long lines scroll. Narrower, one view shows at a time with a back arrow, and the editor soft-wraps.
@@ -18,15 +18,15 @@ A file browser for Herdr that opens on the active space's main folder. Edit file
 - Root: the git top level of the first terminal in the active space, else that terminal's folder, else `space.folder`. This is the folder Herdr names the space after. It changes with the space.
 - Moving the root by hand (↑, double-click a folder, pick a folder) lasts until the space changes. The pin button goes back to the main folder.
 - ⌘S saves through `writeTextFile` with the original text as `expected`. If the file changed on disk, a conflict bar offers Reload or Overwrite.
-- SSH mappings live in shared state under `explorer.ssh` as `{localRoot: {host, remote}}`. Subfolders inherit the mapping, and recent hosts are kept in `explorer.hosts`. Opening a mapped folder reconnects automatically.
+- SSH mappings live in shared state under `201commander.ssh` as `{localRoot: {host, remote}}`. Subfolders inherit the mapping, and recent hosts are kept in `201commander.hosts`. Opening a mapped folder reconnects automatically.
 - Compare: one md5 listing per open folder, both local and remote (`md5sum`, else `md5 -q`). It runs on connect, when a folder is expanded, after a save, and after a transfer.
 - Overwrites (an upload over `≠`, a download over a local file, bulk upload) ask first in the footer.
 
-**Built from:** one mod, `explorer`: `main.js`, `mod.json` (`focusable`, window overlay) and Lucide-style `icons/*.svg`.
-- `herdr` API: `exec` (running `sh`, `ssh`, `tar`, `diff`, `open`, `pbcopy` and `git`), `readTextFile`, `writeTextFile`, `watchFolder`, `pickFolder`, `shared`/`setShared`, `nextCommand` (`explorer.save`, `focus`) and `run("terminal.open")`.
-- SSH runs with `BatchMode=yes` and a ControlMaster socket at `~/.ssh/herdr-explorer-%C` with `ControlPersist=300`.
+**Built from:** one mod, `201commander`: `main.js`, `mod.json` (`focusable`, window overlay) and Lucide-style `icons/*.svg`.
+- `herdr` API: `exec` (running `sh`, `ssh`, `tar`, `diff`, `open`, `pbcopy` and `git`), `readTextFile`, `writeTextFile`, `watchFolder`, `pickFolder`, `shared`/`setShared`, `nextCommand` (`201commander.save`, `focus`) and `run("terminal.open")`.
+- SSH runs with `BatchMode=yes` and a ControlMaster socket at `~/.ssh/herdr-201commander-%C` with `ControlPersist=300`.
 - Uploads: a file goes as `ssh host 'mkdir -p dir && cat > file' < local`. A folder goes as `tar | ssh tar -x`, without `.git` and `.DS_Store`. Downloads use the reverse.
-- The optional `keys.json` binds ⌘⇧E to `pane.split` with the mod, and ⌘S inside the mod to `explorer.save`.
+- The optional `keys.json` binds ⌘⇧E to `pane.split` with the mod, and ⌘S inside the mod to `201commander.save`.
 
 **Watch out:**
 - SSH needs key or agent authentication. There is no password prompt (BatchMode).
@@ -38,7 +38,7 @@ A file browser for Herdr that opens on the active space's main folder. Edit file
 - Compare covers only the folders that are open, up to 1,000 entries each.
 
 **Done when:**
-- `herdr-app check mods/explorer` passes.
+- `herdr-app check mods/201commander` passes.
 - The pane opens on the space's repository root.
 - Clicking a file shows it with the full height, and typing then ⌘S writes it.
 - Finder reveals the file.

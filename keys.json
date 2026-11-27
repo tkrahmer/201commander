@@ -1,4 +1,4 @@
 {
-  "global": { "cmd-shift-e": { "command": "pane.split", "args": { "direction": "right", "mod": "explorer" } } },
-  "mod:explorer": { "cmd-s": "explorer.save" }
+  "global": { "cmd-shift-e": { "command": "pane.split", "args": { "direction": "right", "mod": "201commander" } } },
+  "mod:201commander": { "cmd-s": "201commander.save" }
 }
