@@ -1,0 +1,4 @@
+{
+  "global": { "cmd-shift-e": { "command": "pane.split", "args": { "direction": "right", "mod": "explorer" } } },
+  "mod:explorer": { "cmd-s": "explorer.save" }
+}

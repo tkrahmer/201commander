@@ -1,0 +1,9 @@
+Explorer – a Herdr mod.
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Portions (folder listing, git marks, diff rows) are adapted from Herdr's
+shipped "files" and "changes" mods, Apache License 2.0.
+Icons are Lucide icons (https://lucide.dev), ISC License,
+Copyright (c) for portions of Lucide are held by Cole Bemis 2013-2022
+as part of Feather (MIT). All other copyright (c) for Lucide are held
+by Lucide Contributors 2022.

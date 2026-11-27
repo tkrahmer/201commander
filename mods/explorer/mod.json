@@ -1,0 +1,1 @@
+{ "place": "none", "title": "Explorer", "focusable": true, "overlay": { "kind": "window", "key": "explorer", "width": 0.62, "height": 0.82 } }
