@@ -11,6 +11,7 @@ const PER_FOLDER = 500, TOTAL = 5000;
 const SSH_KEY = "201commander.ssh", HOSTS_KEY = "201commander.hosts";
 const LANG_KEY = "201commander.lang";
 const RETRO_KEY = "201commander.retro";
+const QUERY_MS = 1000; // quick search: a pause this long starts a new search
 
 // Retro look: the CGA blue of the classic DOS file commanders, in the IBM VGA pixel font
 // that Herdr ships with its Herdr 98 layout.
@@ -406,6 +407,49 @@ export default class Commander extends View {
       } catch (e) { this.note = { text: L(`Löschen fehlgeschlagen: ${e.message ?? e}`, `Delete failed: ${e.message ?? e}`), level: "error" }; }
       finally { this.treeHandle.focus(); cx.notify(); }
     });
+  }
+
+  // ----- quick search: type letters to jump -----
+  searchActive() { return Boolean(this.query) && Date.now() - (this.qAt ?? 0) <= QUERY_MS; }
+
+  searchKey(e, cx) {
+    const ch = e.key_char;
+    if (this.searchActive() && e.key === "backspace") { this.search(this.query.slice(0, -1), false, cx); return true; }
+    if (this.searchActive() && e.key === "escape") { this.query = ""; return true; }
+    if (!ch || [...ch].length !== 1 || ch < " " || ch === "\u007f") return false;
+    if (ch === " " && !this.searchActive()) return false;
+    const prev = this.searchActive() ? this.query : "", q = prev + ch;
+    // The same letter again: on to the next entry starting with it.
+    const repeat = q.length > 1 && [...q.toLowerCase()].every((c) => c === q[0].toLowerCase());
+    this.search(repeat ? ch : q, repeat, cx);
+    return true;
+  }
+
+  // Selects the first row (from the current one on, wrapping) whose name starts with q, else contains it.
+  search(q, next, cx) {
+    this.query = q; this.qAt = Date.now(); this.qMiss = false;
+    const list = this.flat ?? [];
+    if (q && list.length) {
+      const lower = q.toLowerCase(), cur = Math.max(0, list.findIndex((r) => r.path === this.sel));
+      const order = [...list.keys()].map((k) => (cur + (next ? 1 : 0) + k) % list.length);
+      const name = (j) => basename(list[j].path).toLowerCase();
+      const j = order.find((k) => name(k).startsWith(lower)) ?? order.find((k) => name(k).includes(lower));
+      if (j === undefined) this.qMiss = true;
+      else { this.sel = list[j].path; this.treeScroll.scroll_to_item(j); }
+    }
+    // Hide the search box once it has expired.
+    cx.timer.after(QUERY_MS + 50, (cx) => { if (this.query && !this.searchActive()) { this.query = ""; cx.notify(); } });
+  }
+
+  searchBox(t) {
+    if (!this.searchActive()) return null;
+    const retro = this.retroOn(), miss = this.qMiss;
+    return h_flex().absolute().bottom(retro ? 2 : 8).right(retro ? 2 : 10).gap(6).px(retro ? 4 : 8).py(retro ? 0 : 3)
+      .when(retro, (e) => e.bg(DOS.black).text_color(miss ? DOS.ansi1 : DOS.yellow))
+      .when(!retro, (e) => e.rounded(6).bg(t.raised).border_1().border_color(miss ? t.ansi1 : t.accent).text_color(miss ? t.ansi1 : t.foreground).text_size(12))
+      .child(retro ? L("Suche:", "Search:") : svg(M + "search.svg").size(12).text_color(miss ? t.ansi1 : t.muted))
+      .child(div().child(this.query))
+      .when(retro, (e) => e.child(div().frames(["_", " "], 530)));
   }
 
   // ----- keyboard: arrows, Enter, Backspace, Tab (file-commander style) -----
@@ -897,11 +941,12 @@ export default class Commander extends View {
           const m = e.modifiers ?? {};
           if (e.keystroke === "cmd-backspace") { this.askDelete(cx); cx.stop_propagation(); return; }
           if (m.platform || m.control || m.alt) return;
-          if (this.navKey(e.key, cx)) { cx.stop_propagation(); cx.notify(); }
+          if (this.searchKey(e, cx) || this.navKey(e.key, cx)) { cx.stop_propagation(); cx.notify(); }
         })
         .when(Boolean(this.error) || !rows.length, (e) => e.child(div().p(8).text_size(this.sz(12)).text_color(this.error ? t.ansi1 : t.dim).child(this.error || (this.loading ? L("Lade…", "Loading…") : this.root ? L("Leerer Ordner", "Empty folder") : L("Kein Ordner – Ordner wählen oder ein Terminal fokussieren", "No folder – choose one or start a terminal in this space")))))
         .when(this.limited, (e) => e.child(div().p(8).text_size(this.sz(11)).text_color(t.dim).child(L("Liste begrenzt auf 500 Einträge pro Ordner / 5.000 gesamt", "List limited to 500 entries per folder / 5,000 total")))))
-      .child(Scrollbar.vertical("201commander-tree").absolute().inset_0());
+      .child(Scrollbar.vertical("201commander-tree").absolute().inset_0())
+      .when(this.searchActive(), (e) => e.child(this.searchBox(t)));
   }
 
   fileView(t, narrow) {

@@ -44,6 +44,7 @@ Click into the list once, then:
 | Enter | Open the file / open or close the folder |
 | ⌫ Backspace | Go up to the parent folder (like `..`) |
 | ⌘⌫ / Delete | Move the selection to the Trash (asks first) |
+| Letters | Quick search: jump to the first name starting with what you type (else containing it); the same letter again cycles through the matches; a 1-second pause starts over |
 | F6 / F7 / F8 | Rename / new (end with `/` for a folder) / delete |
 | Tab / Esc | Into the editor / back to the list |
 
@@ -155,7 +156,7 @@ Apache-2.0, like Herdr. See [NOTICE](NOTICE) for the parts adapted from Herdr's 
 
 ## Deutsch
 
-**201Commander** ist ein Datei-Commander für Herdr. Er öffnet den Hauptordner des aktiven Space und zeigt die Dateien als Baum. Du kannst Dateien direkt bearbeiten (**⌘S** speichert), sie im Finder zeigen und einen Server-Ordner mit gleicher Struktur per SSH vergleichen. Dabei bedeutet `≠` unterschiedlich, `↑` nur lokal und `↓` nur auf dem Server. Außerdem gibt es einen Diff, Hochladen, Server-Version übernehmen und „Alle hoch“. Vor jedem Überschreiben fragt er nach. Die Sprache folgt macOS, der Button **EN/DE** im Kopf schaltet um. Das Monitor-Symbol schaltet in den **Retro-Modus**: blaues DOS-Design mit Doppelrahmen, Pixel-Schrift und funktionierender F1–F10-Leiste (F10 schaltet zurück). Dateien und Ordner legst du mit F7 an (oder mit den Buttons im Kopf), F6 benennt um, F8 bzw. ⌘⌫ legt in den Papierkorb (mit Rückfrage). Mit den Pfeiltasten bewegst du dich durch die Liste, Enter öffnet, → und ← klappen Ordner auf und zu, ⌫ geht eine Ebene höher, Tab springt in den Editor und Esc zurück.
+**201Commander** ist ein Datei-Commander für Herdr. Er öffnet den Hauptordner des aktiven Space und zeigt die Dateien als Baum. Du kannst Dateien direkt bearbeiten (**⌘S** speichert), sie im Finder zeigen und einen Server-Ordner mit gleicher Struktur per SSH vergleichen. Dabei bedeutet `≠` unterschiedlich, `↑` nur lokal und `↓` nur auf dem Server. Außerdem gibt es einen Diff, Hochladen, Server-Version übernehmen und „Alle hoch“. Vor jedem Überschreiben fragt er nach. Die Sprache folgt macOS, der Button **EN/DE** im Kopf schaltet um. Das Monitor-Symbol schaltet in den **Retro-Modus**: blaues DOS-Design mit Doppelrahmen, Pixel-Schrift und funktionierender F1–F10-Leiste (F10 schaltet zurück). Dateien und Ordner legst du mit F7 an (oder mit den Buttons im Kopf), F6 benennt um, F8 bzw. ⌘⌫ legt in den Papierkorb (mit Rückfrage). Tippst du Buchstaben, springt die Auswahl zum passenden Namen (Schnellsuche, derselbe Buchstabe mehrmals geht reihum). Mit den Pfeiltasten bewegst du dich durch die Liste, Enter öffnet, → und ← klappen Ordner auf und zu, ⌫ geht eine Ebene höher, Tab springt in den Editor und Esc zurück.
 
 **Installation:** Bitte einen Agenten in Herdr: *„Füge den Herdr-Mod von https://github.com/tkrahmer/201commander hinzu“*. Oder von Hand:
 
