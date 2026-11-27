@@ -2,7 +2,7 @@
 // with "Show in Finder" and an SSH mirror: map the local folder onto a remote folder
 // with the same structure, compare files (md5), diff, upload and download.
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, Editor, EditorState, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
+import { v_flex, h_flex, Editor, EditorState, InputState, Input, Scrollbar, ScrollHandle, v_virtual_list } from "gpui-base";
 import { spaces, panes, focused, exec, hc, readTextFile, writeTextFile, watchFolder, theme, settings, pickFolder, shared, setShared, notify, props, closeOverlay, nextCommand, run, home, checking } from "herdr";
 
 const M = "mods/201commander/icons/";
@@ -113,6 +113,7 @@ function diffRows(text) {
 export default class Commander extends View {
   init(_props, cx) {
     this.handle = cx.focus_handle();
+    this.treeHandle = cx.focus_handle(); this.treeScroll = ScrollHandle.new(); this.flat = [];
     this.pinned = null; this.gitRoots = new Map(); this.pendingRoots = [];
     this.entries = new Map(); this.folders = new Set(); this.marks = {};
     this.cmp = new Map(); this.remoteOnly = new Map();
@@ -133,7 +134,7 @@ export default class Commander extends View {
         else if (/^f([1-9]|10)$/.test(c)) this.fkey(Number(c.slice(1)), cx);
         else if (c === "retro") this.toggleRetro(cx);
         else if (c === "lang-de" || c === "lang-en") setShared(LANG_KEY, c.slice(5));
-        else if (c === "focus") this.handle.focus();
+        else if (c === "focus") this.treeHandle.focus();
         cx.notify();
       }
     });
@@ -300,6 +301,43 @@ export default class Commander extends View {
       finally { cx.notify(); }
     });
     cx.notify();
+  }
+
+  // ----- keyboard: arrows, Enter, Backspace, Tab (file-commander style) -----
+  navKey(key, cx) {
+    const list = this.flat ?? [];
+    const i = list.findIndex((r) => r.path === this.sel), cur = i >= 0 ? list[i] : null;
+    const go = (j) => {
+      if (!list.length) return;
+      j = Math.max(0, Math.min(list.length - 1, j));
+      this.sel = list[j].path; this.treeScroll.scroll_to_item(j);
+    };
+    switch (key) {
+      case "up": go(i < 0 ? list.length - 1 : i - 1); break;
+      case "down": go(i < 0 ? 0 : i + 1); break;
+      case "pageup": go(i < 0 ? 0 : i - 15); break;
+      case "pagedown": go(i < 0 ? 14 : i + 15); break;
+      case "home": go(0); break;
+      case "end": go(list.length - 1); break;
+      case "right":
+        if (cur?.dir && !cur.remote) {
+          if (!cur.open) this.toggle(cur.path, cx);
+          else if (list[i + 1] && dirname(list[i + 1].path) === cur.path) go(i + 1);
+        }
+        break;
+      case "left":
+        if (cur?.dir && cur.open) this.toggle(cur.path, cx);
+        else if (cur && dirname(cur.path)) go(list.findIndex((r) => r.path === dirname(cur.path)));
+        break;
+      case "enter":
+        if (!cur || cur.remote) break;
+        if (cur.dir) this.toggle(cur.path, cx); else this.openFile(cur.path, cx);
+        break;
+      case "backspace": if (this.root && !this.on) this.setPinned(dirname(this.root) || "/", cx); break;
+      case "tab": if (this.editor && this.view === "file") this.editor.focus(); else return false; break;
+      default: return false;
+    }
+    return true;
   }
 
   // ----- files: open, edit, save -----
@@ -585,12 +623,13 @@ export default class Commander extends View {
       const open = !entry.remote && this.folders.has(path), mark = this.marks[`${this.root}/${path}`];
       const sel = this.sel === path, status = entry.remote ? "remote" : conn ? this.cmp.get(path) : null;
       const active = (this.view === "file" && this.file === path) || (this.view === "diff" && this.diffFile === path);
+      this.flat.push({ path, dir: entry.dir, remote: entry.remote, open });
       if (this.retroOn()) { out.push(this.dosRow(entry, path, depth, open, mark, sel || active, sel, status, t)); if (entry.dir && open) this.rows(path, depth + 1, out, t); continue; }
       out.push(h_flex().id(`row-${entry.remote ? "r" : "l"}-${path}`).h(28).flex_none().pl(6 + depth * 16).pr(4).gap(6).items_center().rounded(6).cursor_pointer()
         .when(sel || active, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
         .on_click((e, cx) => {
-          this.sel = path;
+          this.sel = path; this.treeHandle.focus();
           if (entry.remote) { cx.notify(); return; }
           if (entry.dir) { if (e.click_count === 2) this.setPinned(this.abs(path), cx); else this.toggle(path, cx); }
           else this.openFile(path, cx);
@@ -630,7 +669,7 @@ export default class Commander extends View {
       .when(bar, (e) => e.bg(DOS.selected)).when(!bar, (e) => e.hover((s) => s.bg(DOS.hover)))
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((e, cx) => {
-        this.sel = path;
+        this.sel = path; this.treeHandle.focus();
         if (entry.remote) { cx.notify(); return; }
         if (entry.dir) { if (e.click_count === 2) this.setPinned(this.abs(path), cx); else this.toggle(path, cx); }
         else this.openFile(path, cx);
@@ -736,9 +775,16 @@ export default class Commander extends View {
   }
 
   tree(t) {
+    this.flat = [];
     const rows = this.rows("", 0, [], t);
     return div().flex_1().min_h(0).relative()
-      .child(v_flex().id("201commander-tree").absolute().inset_0().overflow_y_scroll().p(5).children(rows)
+      .child(v_flex().id("201commander-tree").absolute().inset_0().overflow_y_scroll().when(this.retroOn(), (e) => e.pt(6)).when(!this.retroOn(), (e) => e.p(5)).children(rows)
+        .track_focus(this.treeHandle).track_scroll(this.treeScroll)
+        .on_key_down((e, cx) => {
+          const m = e.modifiers ?? {};
+          if (m.platform || m.control || m.alt) return;
+          if (this.navKey(e.key, cx)) { cx.stop_propagation(); cx.notify(); }
+        })
         .when(Boolean(this.error) || !rows.length, (e) => e.child(div().p(8).text_size(this.sz(12)).text_color(this.error ? t.ansi1 : t.dim).child(this.error || (this.loading ? L("Lade…", "Loading…") : this.root ? L("Leerer Ordner", "Empty folder") : L("Kein Ordner – Ordner wählen oder ein Terminal fokussieren", "No folder – choose one or start a terminal in this space")))))
         .when(this.limited, (e) => e.child(div().p(8).text_size(this.sz(11)).text_color(t.dim).child(L("Liste begrenzt auf 500 Einträge pro Ordner / 5.000 gesamt", "List limited to 500 entries per folder / 5,000 total")))))
       .child(Scrollbar.vertical("201commander-tree").absolute().inset_0());
@@ -834,6 +880,11 @@ export default class Commander extends View {
       .on_key_down((e, cx) => {
         if (e.keystroke === "cmd-s" && this.view === "file") { this.save(cx); cx.stop_propagation(); }
         else if (e.key === "escape" && this.confirm) { this.confirm = null; cx.notify(); cx.stop_propagation(); }
+        else if (e.key === "escape" && this.view !== "tree") {
+          if (this.view === "diff") this.view = this.file ? "file" : "tree";
+          else if (this.width < 760) this.guard(() => { this.closeFile(); this.view = "tree"; });
+          this.treeHandle.focus(); cx.stop_propagation(); cx.notify();
+        }
       })
       .when(retro, (e) => e.font_family(DOS_FONT).text_size(16).rounded(0).border_color(DOS.border))
       .child(retro ? this.dosMenu(overlay) : this.header(t, overlay))
