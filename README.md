@@ -135,7 +135,9 @@ Then, in `layouts/my-main.json`, point the `tabs` block to `my-tabs` and add `{ 
 - **SSH runs through herdr-core** (`hc exec`). On macOS the Herdr app itself may not have Local Network access, which makes `host.local` names fail with “No route to host”. herdr-core has that access.
 - Connections are reused for 5 minutes (`ControlMaster`, socket in `~/.ssh/herdr-201commander-*`).
 - The remote path may start with `~`, for example `~/sites/shop`.
-- Folder uploads skip `.git` and `.DS_Store`.
+- Uploads go as a tar stream, files and folders alike. Symlinks are sent as symlinks, never the file they point to, and `.git` and `.DS_Store` are skipped.
+- **Upload all** lists what it will send and leaves out likely secrets (`.env*`, `.npmrc`, `.netrc`, `.htpasswd`, SSH keys, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.kdbx`). You can still upload those one by one.
+- File names coming from the server are checked: anything with `/`, `.` or `..` is ignored, so a server can never steer a download outside the project folder.
 - Compare covers the folders you have open in the tree, up to 1,000 entries each.
 - The editor opens text files up to 1 MiB. Bigger and binary files open in their default app.
 - Spaces on another Herdr machine can be browsed but not edited, and SSH is off there.

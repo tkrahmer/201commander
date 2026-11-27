@@ -51,6 +51,13 @@ const basename = (p) => p.split("/").pop();
 const tilde = (p) => (p && p.startsWith(home()) ? "~" + p.slice(home().length) : p ?? "");
 const untab = (text) => text.replace(/[^\t]*\t/g, (s) => s.slice(0, -1).padEnd((s.length - 1) - (s.length - 1) % 4 + 4));
 const validHost = (h) => /^[A-Za-z0-9_.@\-\[\]]+(:\d+)?$/.test(h) && !h.startsWith("-");
+// One path segment as a file system returns it. Names from a server are untrusted: a crafted
+// listing could send "../x" or "a/b" and steer a download outside the project.
+const safeName = (n) => typeof n === "string" && n !== "" && n !== "." && n !== ".." && !n.includes("/") && !n.includes("\0");
+// A project-relative path made only of safe segments ("" is the root itself).
+const safeRel = (rel) => rel === "" || (typeof rel === "string" && rel.split("/").every(safeName));
+// Kept out of "Upload all" (still uploadable one by one): secrets that rarely belong on a server.
+const SENSITIVE = /^(\.env(\..*)?|\.npmrc|\.pypirc|\.netrc|\.htpasswd|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|.*\.(pem|key|p12|pfx|kdbx))$/i;
 
 function sshArgs(spec) {
   let host = spec.trim(), port = null;
@@ -62,11 +69,13 @@ function sshArgs(spec) {
 }
 // macOS keeps the app itself out of the local network unless allowed (host.local → "No route to
 // host"); herdr-core has that access, so everything that talks SSH runs through `hc exec`.
+// Whether `hc exec` is usable is checked once with a no-op, so a failing command never runs twice.
+let hcExec = null;
 async function net(cmd, args, timeout = 60000) {
-  try {
-    const r = await hc(["exec", "--timeout", String(Math.min(600, Math.ceil(timeout / 1000))), "--", cmd, ...args]);
-    if (r.code === 0 || !/^error|unrecognized|unexpected argument/i.test(r.stderr ?? "")) return r;
-  } catch {}
+  if (hcExec === null) {
+    hcExec = hc(["exec", "--timeout", "10", "--", "true"]).then((r) => r.code === 0).catch(() => false);
+  }
+  if (await hcExec) return hc(["exec", "--timeout", String(Math.min(600, Math.ceil(timeout / 1000))), "--", cmd, ...args]);
   return exec(cmd, args, { timeout });
 }
 const ssh = (spec, command, timeout = 60000) => net("ssh", [...sshArgs(spec), command], timeout);
@@ -87,13 +96,13 @@ async function listFolder(path, on) {
   const r = await exec("sh", ["-c", LIST, "201commander", path], { on });
   if (r.code !== 0) throw new Error(r.stderr || L("Ordner kann nicht gelesen werden", "Cannot read this folder"));
   const f = r.stdout.split("\0"), out = [];
-  for (let i = 0; i + 1 < f.length; i += 2) out.push({ name: f[i + 1], dir: f[i] === "d" });
+  for (let i = 0; i + 1 < f.length; i += 2) if (safeName(f[i + 1])) out.push({ name: f[i + 1], dir: f[i] === "d" });
   return out.sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name));
 }
 
 function parseHash(stdout) {
   const f = stdout.split("\0"), out = new Map();
-  for (let i = 0; i + 2 < f.length; i += 3) out.set(f[i + 1], { dir: f[i] === "d", hash: f[i + 2] });
+  for (let i = 0; i + 2 < f.length; i += 3) if (safeName(f[i + 1])) out.set(f[i + 1], { dir: f[i] === "d", hash: f[i + 2] });
   return out;
 }
 
@@ -215,7 +224,7 @@ export default class Commander extends View {
     let best = null;
     for (const [base, v] of Object.entries(all))
       if ((this.root === base || this.root.startsWith(base + "/")) && (!best || base.length > best.base.length)) best = { base, ...v };
-    if (!best?.host || !best?.remote) return null;
+    if (!best?.host || !best?.remote || !validHost(best.host) || typeof best.remote !== "string") return null;
     return { host: best.host, base: best.base, remote: best.remote.replace(/\/+$/, "") + this.root.slice(best.base.length) };
   }
   remoteOf(rel) { const c = this.cfg(); return c ? join(c.remote, rel) : null; }
@@ -659,11 +668,12 @@ export default class Commander extends View {
     });
   }
 
+  // Files and folders both go as a tar stream: a symlink is sent as a symlink, so a link in the
+  // project (say to ~/.ssh/id_ed25519) never uploads what it points to.
   uploadCmd(rel, dir) {
-    const c = this.cfg(), args = sshArgs(c.host), remote = join(c.remote, rel);
-    if (!dir) return net("sh", ["-c", 'f=$1; shift; exec ssh "$@" < "$f"', "x", this.abs(rel), ...args, `mkdir -p ${rq(dirname(remote) || "/")} && cat > ${rq(remote)}`], 600000);
-    const parent = dirname(remote) || "/";
-    return net("sh", ["-c", 'd=$1; n=$2; shift 2; COPYFILE_DISABLE=1 tar -C "$d" --exclude .git --exclude .DS_Store -cf - "./$n" | ssh "$@"', "x", dirname(this.abs(rel)), basename(rel), ...args, `mkdir -p ${rq(parent)} && tar -C ${rq(parent)} -xf -`], 600000);
+    if (!rel || !safeRel(rel)) return Promise.resolve({ code: 1, stdout: "", stderr: L("Ungültiger Pfad", "Invalid path") });
+    const c = this.cfg(), args = sshArgs(c.host), remote = join(c.remote, rel), parent = dirname(remote) || "/";
+    return net("sh", ["-c", 'd=$1; n=$2; shift 2; COPYFILE_DISABLE=1 tar -C "$d" --no-xattrs --exclude .git --exclude .DS_Store -cf - "./$n" | ssh "$@"', "x", dirname(this.abs(rel)), basename(rel), ...args, `mkdir -p ${rq(parent)} && tar -C ${rq(parent)} -xf -`], 600000);
   }
 
   upload(rel, dir, cx) {
@@ -675,10 +685,12 @@ export default class Commander extends View {
 
   download(rel, dir, cx) {
     if (!this.connected()) return;
+    if (!rel || !safeRel(rel)) { this.note = { text: L("Ungültiger Pfad vom Server – Download abgebrochen", "Invalid path from the server – download stopped"), level: "error" }; cx.notify(); return; }
     const c = this.cfg(), args = sshArgs(c.host), remote = join(c.remote, rel), local = this.abs(rel);
     const work = () => dir
       ? net("sh", ["-c", 'd=$1; shift; mkdir -p "$d" && ssh "$@" | tar -C "$d" -xf -', "x", dirname(local), ...args, `tar -C ${rq(dirname(remote) || "/")} -cf - ${q("./" + basename(rel))}`], 600000)
-      : net("sh", ["-c", 'f=$1; shift; mkdir -p "$(dirname "$f")" && ssh "$@" > "$f.201commander-part" && mv "$f.201commander-part" "$f" || { rm -f "$f.201commander-part"; exit 1; }', "x", local, ...args, `cat ${rq(remote)}`], 600000);
+      // mktemp creates a fresh file (never follows a planted link); mv then replaces the target atomically.
+      : net("sh", ["-c", 'f=$1; shift; mkdir -p "$(dirname "$f")" || exit 1; t=$(mktemp "$f.201c.XXXXXX") || exit 1; if ssh "$@" > "$t" && chmod 644 "$t" && mv -f "$t" "$f"; then exit 0; fi; rm -f "$t"; exit 1', "x", local, ...args, `cat ${rq(remote)}`], 600000);
     const go = () => this.transfer(L(`Lade ${basename(rel)} herunter…`, `Downloading ${basename(rel)}…`), L(`Heruntergeladen: ${basename(rel)}`, `Downloaded ${basename(rel)}`), rel, async () => {
       const r = await work();
       if (r.code === 0 && this.file === rel) this.reload(cx);
@@ -689,11 +701,17 @@ export default class Commander extends View {
   }
 
   uploadAllChanged(cx) {
-    const items = [...this.cmp].filter(([p, s]) => s === "diff" || s === "local")
+    const all = [...this.cmp].filter(([p, s]) => s === "diff" || s === "local")
       .filter(([p]) => ![...this.cmp].some(([o, s]) => s === "local" && o !== p && p.startsWith(o + "/")))
       .map(([p]) => ({ p, dir: this.isDir(p) })).filter((i) => !(i.dir && this.cmp.get(i.p) === "diff"));
-    if (!items.length) { this.note = { text: L("Keine Unterschiede in den geöffneten Ordnern", "No differences in the open folders"), level: "ok" }; cx.notify(); return; }
-    this.ask(L(`${items.length} geänderte/neue Einträge hochladen?`, `Upload ${items.length} changed/new entries?`), L("Alle hochladen", "Upload all"), () => {
+    const skipped = all.filter((i) => !i.dir && SENSITIVE.test(basename(i.p))), items = all.filter((i) => !skipped.includes(i));
+    if (!items.length) {
+      this.note = { text: skipped.length ? L(`Nur sensible Dateien geändert (${skipped.map((i) => i.p).join(", ")}) – bei Bedarf einzeln hochladen`, `Only sensitive files changed (${skipped.map((i) => i.p).join(", ")}) – upload them one by one if needed`) : L("Keine Unterschiede in den geöffneten Ordnern", "No differences in the open folders"), level: "ok" };
+      cx.notify(); return;
+    }
+    const names = items.slice(0, 6).map((i) => i.p + (i.dir ? "/" : "")).join(", ") + (items.length > 6 ? ` … (+${items.length - 6})` : "");
+    const skipNote = skipped.length ? L(` Ausgelassen: ${skipped.map((i) => i.p).join(", ")}.`, ` Left out: ${skipped.map((i) => i.p).join(", ")}.`) : "";
+    this.ask(L(`${items.length} hochladen: ${names}?${skipNote}`, `Upload ${items.length}: ${names}?${skipNote}`), L("Alle hochladen", "Upload all"), () => {
       const ctx = this.ctx;
       cx.spawn(async (cx) => {
         let done = 0, failed = 0;
@@ -717,7 +735,7 @@ export default class Commander extends View {
   }
 
   showDiff(rel, cx) {
-    if (!this.connected()) return;
+    if (!this.connected() || !rel || !safeRel(rel)) return;
     this.guard(() => {
       const c = this.cfg();
       this.diffFile = rel; this.diff = null; this.diffError = null; this.view = "diff";
