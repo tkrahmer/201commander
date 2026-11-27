@@ -3,15 +3,32 @@
 // with the same structure, compare files (md5), diff, upload and download.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme, settings, pickFolder, shared, setShared, notify, props, closeOverlay, nextCommand, run, home, checking } from "herdr";
+import { spaces, panes, focused, exec, hc, readTextFile, writeTextFile, watchFolder, theme, settings, pickFolder, shared, setShared, notify, props, closeOverlay, nextCommand, run, home, checking } from "herdr";
 
 const M = "mods/201commander/icons/";
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", cjs: "js", toml: "yaml", yml: "yaml", jsonc: "json", svelte: "html", vue: "html", twig: "html", htm: "html", php: "php", sh: "bash", zsh: "bash" };
 const PER_FOLDER = 500, TOTAL = 5000;
 const SSH_KEY = "201commander.ssh", HOSTS_KEY = "201commander.hosts";
+const LANG_KEY = "201commander.lang";
+
+// UI language: German when macOS (or $LANG) is German, else English; the header's DE/EN
+// button overrides it for every copy (shared LANG_KEY).
+let UI_DE = false;
+const L = (de, en) => (UI_DE ? de : en);
+async function detectGerman() {
+  const r = await exec("defaults", ["read", "-g", "AppleLanguages"]).catch(() => null);
+  let first = r?.code === 0 ? r.stdout.replace(/[()\s"]/g, "").split(",")[0] : "";
+  if (!first) {
+    const e = await exec("sh", ["-c", 'printf %s "${LC_ALL:-${LC_MESSAGES:-$LANG}}"']).catch(() => null);
+    first = e?.stdout ?? "";
+  }
+  return first.toLowerCase().startsWith("de");
+}
 
 // ---------- helpers ----------
 const q = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
+// Quotes a remote path, keeping a leading ~ for the remote shell to expand.
+const rq = (p) => (p === "~" ? '"$HOME"' : p.startsWith("~/") ? '"$HOME"/' + q(p.slice(2)) : q(p));
 const join = (a, b) => (b ? `${a.replace(/\/$/, "")}/${b}` : a);
 const dirname = (p) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
 const basename = (p) => p.split("/").pop();
@@ -27,7 +44,16 @@ function sshArgs(spec) {
     "-o", "ControlMaster=auto", "-o", `ControlPath=${home()}/.ssh/herdr-201commander-%C`, "-o", "ControlPersist=300",
     ...(port ? ["-p", port] : []), host];
 }
-const ssh = (spec, command, timeout = 60000) => exec("ssh", [...sshArgs(spec), command], { timeout });
+// macOS keeps the app itself out of the local network unless allowed (host.local → "No route to
+// host"); herdr-core has that access, so everything that talks SSH runs through `hc exec`.
+async function net(cmd, args, timeout = 60000) {
+  try {
+    const r = await hc(["exec", "--timeout", String(Math.min(600, Math.ceil(timeout / 1000))), "--", cmd, ...args]);
+    if (r.code === 0 || !/^error|unrecognized|unexpected argument/i.test(r.stderr ?? "")) return r;
+  } catch {}
+  return exec(cmd, args, { timeout });
+}
+const ssh = (spec, command, timeout = 60000) => net("ssh", [...sshArgs(spec), command], timeout);
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -43,7 +69,7 @@ const HASH = 'cd "$1" 2>/dev/null || exit 3; if command -v md5sum >/dev/null 2>&
 
 async function listFolder(path, on) {
   const r = await exec("sh", ["-c", LIST, "201commander", path], { on });
-  if (r.code !== 0) throw new Error(r.stderr || "Ordner kann nicht gelesen werden");
+  if (r.code !== 0) throw new Error(r.stderr || L("Ordner kann nicht gelesen werden", "Cannot read this folder"));
   const f = r.stdout.split("\0"), out = [];
   for (let i = 0; i + 1 < f.length; i += 2) out.push({ name: f[i + 1], dir: f[i] === "d" });
   return out.sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name));
@@ -81,12 +107,14 @@ export default class Commander extends View {
     this.hostInput.on("submit", (_e, cx) => this.connect(cx));
     this.remoteInput.on("submit", (_e, cx) => this.connect(cx));
     if (checking()) return;
+    cx.spawn(async (cx) => { this.autoDe = await detectGerman(); cx.notify(); });
     this.refresh(cx);
     cx.timer.every(10000, (cx) => this.refresh(cx));
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
         if (c === "save") this.save(cx);
+        else if (c === "lang-de" || c === "lang-en") setShared(LANG_KEY, c.slice(5));
         else if (c === "focus") this.handle.focus();
         cx.notify();
       }
@@ -232,7 +260,7 @@ export default class Commander extends View {
 
   guard(action) {
     if (!this.dirty) return action();
-    this.ask(`Ungespeicherte Änderungen in ${basename(this.file)} verwerfen?`, "Verwerfen", action);
+    this.ask(L(`Ungespeicherte Änderungen in ${basename(this.file)} verwerfen?`, `Discard unsaved changes in ${basename(this.file)}?`), L("Verwerfen", "Discard"), action);
   }
 
   openFile(rel, cx) {
@@ -243,10 +271,10 @@ export default class Commander extends View {
         try {
           const text = await readTextFile(this.abs(rel), { on });
           if (this.file !== rel || !this.current(ctx)) return;
-          if (text === null) { this.fileError = "Datei nicht mehr vorhanden"; return; }
-          if (text.includes("\0")) { this.fileError = "Binärdatei – keine Textansicht. Mit »Öffnen« in der Standard-App öffnen."; return; }
+          if (text === null) { this.fileError = L("Datei nicht mehr vorhanden", "This file is no longer available"); return; }
+          if (text.includes("\0")) { this.fileError = L("Binärdatei – keine Textansicht. Mit »Öffnen« in der Standard-App öffnen.", "Binary file – no text view. Use “Open” to open it in its default app."); return; }
           this.makeEditor(text, rel);
-        } catch { if (this.file === rel) this.fileError = "Datei kann nicht angezeigt werden (binär, größer als 1 MB oder nicht lesbar)."; }
+        } catch { if (this.file === rel) this.fileError = L("Datei kann nicht angezeigt werden (binär, größer als 1 MB oder nicht lesbar).", "Cannot show this file (binary, larger than 1 MB, or unreadable)."); }
         finally { cx.notify(); }
       });
     });
@@ -279,11 +307,11 @@ export default class Commander extends View {
         const expected = force ? await readTextFile(path) : this.original;
         await writeTextFile(path, text, expected);
         if (this.file === rel) { this.original = text; this.dirty = this.editor.value() !== text; this.conflict = false; }
-        this.note = { text: `Gespeichert: ${rel}`, level: "ok" };
+        this.note = { text: L(`Gespeichert: ${rel}`, `Saved: ${rel}`), level: "ok" };
         if (this.connected() && this.current(ctx)) await this.compareFolder(dirname(rel), ctx);
       } catch (e) {
         this.conflict = true;
-        this.note = { text: "Die Datei wurde inzwischen außerhalb geändert. Neu laden oder überschreiben?", level: "error" };
+        this.note = { text: L("Die Datei wurde inzwischen außerhalb geändert. Neu laden oder überschreiben?", "The file was changed elsewhere. Reload or overwrite?"), level: "error" };
       } finally { this.saving = false; cx.notify(); }
     });
     cx.notify();
@@ -306,7 +334,7 @@ export default class Commander extends View {
   openDefault(rel) { exec("open", [this.abs(rel)]).catch(() => {}); }
   copyPath(rel, cx) {
     exec("sh", ["-c", 'printf %s "$1" | pbcopy', "x", this.abs(rel)]).catch(() => {});
-    this.note = { text: `Pfad kopiert: ${tilde(this.abs(rel))}`, level: "ok" }; cx.notify();
+    this.note = { text: L(`Pfad kopiert: ${tilde(this.abs(rel))}`, `Path copied: ${tilde(this.abs(rel))}`), level: "ok" }; cx.notify();
   }
   terminalHere(relDir) { run("terminal.open", { folder: this.abs(relDir), place: "tab" }); }
 
@@ -317,8 +345,8 @@ export default class Commander extends View {
     let base = this.root, rem = remote;
     if (quiet) { const c = this.cfg(); if (!c) return; base = c.base; }
     else {
-      if (!validHost(host)) { this.conn = { state: "error", msg: "Ungültiger Host (Format: user@host oder user@host:port)" }; cx.notify(); return; }
-      if (!remote.startsWith("/") && !remote.startsWith("~")) { this.conn = { state: "error", msg: "Remote-Pfad muss absolut sein (/…) oder mit ~ beginnen" }; cx.notify(); return; }
+      if (!validHost(host)) { this.conn = { state: "error", msg: L("Ungültiger Host (Format: user@host oder user@host:port)", "Invalid host (format: user@host or user@host:port)") }; cx.notify(); return; }
+      if (!remote.startsWith("/") && !remote.startsWith("~")) { this.conn = { state: "error", msg: L("Remote-Pfad muss absolut sein (/…) oder mit ~ beginnen", "Remote path must be absolute (/…) or start with ~") }; cx.notify(); return; }
       const c = this.cfg();
       // Editing while inside a mapped subfolder updates the mapping's base instead of adding a nested one.
       if (c && c.base !== this.root && c.host === host && c.remote === remote) base = c.base;
@@ -332,9 +360,9 @@ export default class Commander extends View {
     this.conn = { state: "connecting" };
     cx.spawn(async (cx) => {
       try {
-        const r = await ssh(c.host, `cd ${q(c.remote)} 2>/dev/null && echo ok || echo missing`, 20000);
+        const r = await ssh(c.host, `cd ${rq(c.remote)} 2>/dev/null && echo ok || echo missing`, 20000);
         if (!this.current(ctx)) return;
-        if (r.code !== 0) { this.conn = { state: "error", msg: (r.stderr || "Verbindung fehlgeschlagen").trim().split("\n").pop() }; return; }
+        if (r.code !== 0) { this.conn = { state: "error", msg: (r.stderr || L("Verbindung fehlgeschlagen", "Connection failed")).trim().split("\n").pop() }; return; }
         this.conn = { state: "ok", missing: r.stdout.trim() === "missing" };
         await this.compareAll(ctx, cx);
       } catch (e) { if (this.current(ctx)) this.conn = { state: "error", msg: String(e.message ?? e) }; }
@@ -351,7 +379,7 @@ export default class Commander extends View {
   }
 
   async compareAll(ctx, cx) {
-    this.busy = "Vergleiche mit Server…"; cx?.notify();
+    this.busy = L("Vergleiche mit Server…", "Comparing with server…"); cx?.notify();
     try { for (const p of ["", ...this.folders]) { if (!this.current(ctx)) return; await this.compareFolder(p, ctx); cx?.notify(); } }
     finally { this.busy = null; }
   }
@@ -361,10 +389,10 @@ export default class Commander extends View {
     if (!c) return;
     const [l, r] = await Promise.all([
       exec("sh", ["-c", HASH, "x", this.abs(rel)], { timeout: 120000 }),
-      ssh(c.host, `sh -c ${q(HASH)} x ${q(join(c.remote, rel))}`, 120000),
+      ssh(c.host, `sh -c ${q(HASH)} x ${rq(join(c.remote, rel))}`, 120000),
     ]);
     if (!this.current(ctx)) return;
-    if (r.code !== 0 && r.code !== 3) throw new Error((r.stderr || "Vergleich fehlgeschlagen").trim());
+    if (r.code !== 0 && r.code !== 3) throw new Error((r.stderr || L("Vergleich fehlgeschlagen", "Compare failed")).trim());
     const local = parseHash(l.stdout), remote = r.code === 3 ? new Map() : parseHash(r.stdout);
     for (const k of [...this.cmp.keys()]) if (dirname(k) === rel) this.cmp.delete(k);
     for (const [name, e] of local) {
@@ -376,31 +404,31 @@ export default class Commander extends View {
   }
 
   // Runs one transfer with progress, then re-compares the touched folder.
-  transfer(label, rel, work, cx) {
+  transfer(label, done, rel, work, cx) {
     const ctx = this.ctx;
     this.busy = label; cx.notify();
     cx.spawn(async (cx) => {
       try {
         const r = await work();
         if (r.code !== 0) throw new Error((r.stderr || `Exit ${r.code}`).trim().split("\n").pop());
-        this.note = { text: `${label.replace("…", "")} ✓`, level: "ok" };
+        this.note = { text: `✓ ${done}`, level: "ok" };
         if (this.current(ctx)) { await this.compareFolder(dirname(rel), ctx); this.refresh(cx); }
-      } catch (e) { this.note = { text: `${label.replace("…", "")} fehlgeschlagen: ${e.message ?? e}`, level: "error" }; }
+      } catch (e) { this.note = { text: L(`Fehlgeschlagen: ${label.replace("…", "")} – ${e.message ?? e}`, `Failed: ${label.replace("…", "")} – ${e.message ?? e}`), level: "error" }; }
       finally { this.busy = null; cx.notify(); }
     });
   }
 
   uploadCmd(rel, dir) {
     const c = this.cfg(), args = sshArgs(c.host), remote = join(c.remote, rel);
-    if (!dir) return exec("sh", ["-c", 'f=$1; shift; exec ssh "$@" < "$f"', "x", this.abs(rel), ...args, `mkdir -p ${q(dirname(remote) || "/")} && cat > ${q(remote)}`], { timeout: 600000 });
+    if (!dir) return net("sh", ["-c", 'f=$1; shift; exec ssh "$@" < "$f"', "x", this.abs(rel), ...args, `mkdir -p ${rq(dirname(remote) || "/")} && cat > ${rq(remote)}`], 600000);
     const parent = dirname(remote) || "/";
-    return exec("sh", ["-c", 'd=$1; n=$2; shift 2; COPYFILE_DISABLE=1 tar -C "$d" --exclude .git --exclude .DS_Store -cf - "./$n" | ssh "$@"', "x", dirname(this.abs(rel)), basename(rel), ...args, `mkdir -p ${q(parent)} && tar -C ${q(parent)} -xf -`], { timeout: 600000 });
+    return net("sh", ["-c", 'd=$1; n=$2; shift 2; COPYFILE_DISABLE=1 tar -C "$d" --exclude .git --exclude .DS_Store -cf - "./$n" | ssh "$@"', "x", dirname(this.abs(rel)), basename(rel), ...args, `mkdir -p ${rq(parent)} && tar -C ${rq(parent)} -xf -`], 600000);
   }
 
   upload(rel, dir, cx) {
     if (!this.connected()) return;
-    const go = () => this.transfer(`Lade ${basename(rel)} hoch…`, rel, () => this.uploadCmd(rel, dir), cx);
-    if (this.cmp.get(rel) === "diff" || (dir && this.cmp.get(rel) === "same")) this.ask(`${basename(rel)} auf dem Server überschreiben?`, "Hochladen", go);
+    const go = () => this.transfer(L(`Lade ${basename(rel)} hoch…`, `Uploading ${basename(rel)}…`), L(`Hochgeladen: ${basename(rel)}`, `Uploaded ${basename(rel)}`), rel, () => this.uploadCmd(rel, dir), cx);
+    if (this.cmp.get(rel) === "diff" || (dir && this.cmp.get(rel) === "same")) this.ask(L(`${basename(rel)} auf dem Server überschreiben?`, `Overwrite ${basename(rel)} on the server?`), L("Hochladen", "Upload"), go);
     else go();
   }
 
@@ -408,14 +436,14 @@ export default class Commander extends View {
     if (!this.connected()) return;
     const c = this.cfg(), args = sshArgs(c.host), remote = join(c.remote, rel), local = this.abs(rel);
     const work = () => dir
-      ? exec("sh", ["-c", 'd=$1; shift; mkdir -p "$d" && ssh "$@" | tar -C "$d" -xf -', "x", dirname(local), ...args, `tar -C ${q(dirname(remote) || "/")} -cf - ${q("./" + basename(rel))}`], { timeout: 600000 })
-      : exec("sh", ["-c", 'f=$1; shift; mkdir -p "$(dirname "$f")" && ssh "$@" > "$f.201commander-part" && mv "$f.201commander-part" "$f" || { rm -f "$f.201commander-part"; exit 1; }', "x", local, ...args, `cat ${q(remote)}`], { timeout: 600000 });
-    const go = () => this.transfer(`Lade ${basename(rel)} herunter…`, rel, async () => {
+      ? net("sh", ["-c", 'd=$1; shift; mkdir -p "$d" && ssh "$@" | tar -C "$d" -xf -', "x", dirname(local), ...args, `tar -C ${rq(dirname(remote) || "/")} -cf - ${q("./" + basename(rel))}`], 600000)
+      : net("sh", ["-c", 'f=$1; shift; mkdir -p "$(dirname "$f")" && ssh "$@" > "$f.201commander-part" && mv "$f.201commander-part" "$f" || { rm -f "$f.201commander-part"; exit 1; }', "x", local, ...args, `cat ${rq(remote)}`], 600000);
+    const go = () => this.transfer(L(`Lade ${basename(rel)} herunter…`, `Downloading ${basename(rel)}…`), L(`Heruntergeladen: ${basename(rel)}`, `Downloaded ${basename(rel)}`), rel, async () => {
       const r = await work();
       if (r.code === 0 && this.file === rel) this.reload(cx);
       return r;
     }, cx);
-    if (this.cmp.get(rel) === "diff" || (this.cmp.get(rel) === "same" && dir)) this.ask(`Lokale ${basename(rel)} mit der Server-Version überschreiben?`, "Herunterladen", go);
+    if (this.cmp.get(rel) === "diff" || (this.cmp.get(rel) === "same" && dir)) this.ask(L(`Lokale ${basename(rel)} mit der Server-Version überschreiben?`, `Overwrite local ${basename(rel)} with the server version?`), "Herunterladen", go);
     else go();
   }
 
@@ -423,18 +451,18 @@ export default class Commander extends View {
     const items = [...this.cmp].filter(([p, s]) => s === "diff" || s === "local")
       .filter(([p]) => ![...this.cmp].some(([o, s]) => s === "local" && o !== p && p.startsWith(o + "/")))
       .map(([p]) => ({ p, dir: this.isDir(p) })).filter((i) => !(i.dir && this.cmp.get(i.p) === "diff"));
-    if (!items.length) { this.note = { text: "Keine Unterschiede in den geöffneten Ordnern", level: "ok" }; cx.notify(); return; }
-    this.ask(`${items.length} geänderte/neue Einträge hochladen?`, "Alle hochladen", () => {
+    if (!items.length) { this.note = { text: L("Keine Unterschiede in den geöffneten Ordnern", "No differences in the open folders"), level: "ok" }; cx.notify(); return; }
+    this.ask(L(`${items.length} geänderte/neue Einträge hochladen?`, `Upload ${items.length} changed/new entries?`), L("Alle hochladen", "Upload all"), () => {
       const ctx = this.ctx;
       cx.spawn(async (cx) => {
         let done = 0, failed = 0;
         for (const i of items) {
-          this.busy = `Hochladen ${done + 1}/${items.length}: ${i.p}`; cx.notify();
+          this.busy = L(`Hochladen ${done + 1}/${items.length}: ${i.p}`, `Uploading ${done + 1}/${items.length}: ${i.p}`); cx.notify();
           const r = await this.uploadCmd(i.p, i.dir).catch(() => ({ code: 1 }));
           r.code === 0 ? done++ : failed++;
         }
         this.busy = null;
-        this.note = { text: `${done} hochgeladen${failed ? `, ${failed} fehlgeschlagen` : ""}`, level: failed ? "error" : "ok" };
+        this.note = { text: (UI_DE ? `${done} hochgeladen${failed ? `, ${failed} fehlgeschlagen` : ""}` : `${done} uploaded${failed ? `, ${failed} failed` : ""}`), level: failed ? "error" : "ok" };
         if (this.current(ctx)) await this.compareAll(ctx, cx);
         cx.notify();
       });
@@ -454,11 +482,11 @@ export default class Commander extends View {
       this.diffFile = rel; this.diff = null; this.diffError = null; this.view = "diff";
       cx.spawn(async (cx) => {
         try {
-          const r = await exec("sh", ["-c", 'l=$1; shift; t=$(mktemp) || exit 9; trap \'rm -f "$t"\' EXIT; ssh "$@" > "$t" || exit 9; diff -u --label lokal --label server -- "$l" "$t"', "x", this.abs(rel), ...sshArgs(c.host), `cat ${q(join(c.remote, rel))}`], { timeout: 120000 });
+          const r = await net("sh", ["-c", 'l=$1; shift; t=$(mktemp) || exit 9; trap \'rm -f "$t"\' EXIT; ssh "$@" > "$t" || exit 9; diff -u --label local --label server -- "$l" "$t"', "x", this.abs(rel), ...sshArgs(c.host), `cat ${rq(join(c.remote, rel))}`], 120000);
           if (this.diffFile !== rel) return;
-          if (r.code === 0) this.diff = [{ kind: "", text: "Identisch – keine Unterschiede." }];
+          if (r.code === 0) this.diff = [{ kind: "", text: L("Identisch – keine Unterschiede.", "Identical – no differences.") }];
           else if (r.code === 1) this.diff = diffRows(r.stdout);
-          else this.diffError = (r.stderr || "Diff fehlgeschlagen").trim();
+          else this.diffError = (r.stderr || L("Diff fehlgeschlagen", "Diff failed")).trim();
         } catch (e) { this.diffError = String(e.message ?? e); }
         finally { cx.notify(); }
       });
@@ -487,7 +515,7 @@ export default class Commander extends View {
   }
 
   badge(status, t) {
-    const map = { diff: ["≠", t.blocked, "Unterschiedlich zum Server"], local: ["↑", t.ansi2, "Nur lokal – noch nicht auf dem Server"], remote: ["↓", t.ansi4, "Nur auf dem Server"] };
+    const map = { diff: ["≠", t.blocked, L("Unterschiedlich zum Server", "Differs from the server")], local: ["↑", t.ansi2, L("Nur lokal – noch nicht auf dem Server", "Local only – not on the server yet")], remote: ["↓", t.ansi4, L("Nur auf dem Server", "Only on the server")] };
     const b = map[status];
     if (!b) return null;
     return div().id(`badge-${status}`).w(14).flex_none().text_size(12).font_semibold().text_color(b[1]).child(b[0]);
@@ -528,15 +556,15 @@ export default class Commander extends View {
   rowActions(path, entry, status, t) {
     const a = [], conn = this.connected();
     if (entry.remote) {
-      a.push(this.btn(`dl-${path}`, "download", "Vom Server herunterladen", (_e, cx) => this.download(path, entry.dir, cx), t, { color: t.ansi4 }));
+      a.push(this.btn(`dl-${path}`, "download", L("Vom Server herunterladen", "Download from server"), (_e, cx) => this.download(path, entry.dir, cx), t, { color: t.ansi4 }));
       return a;
     }
-    if (!this.on) a.push(this.btn(`fi-${path}`, "finder", "Im Finder zeigen", () => this.finder(path, false), t));
-    if (entry.dir) a.push(this.btn(`te-${path}`, "terminal", "Terminal hier öffnen", () => this.terminalHere(path), t));
+    if (!this.on) a.push(this.btn(`fi-${path}`, "finder", L("Im Finder zeigen", "Show in Finder"), () => this.finder(path, false), t));
+    if (entry.dir) a.push(this.btn(`te-${path}`, "terminal", L("Terminal hier öffnen", "Open terminal here"), () => this.terminalHere(path), t));
     if (conn) {
-      if (!entry.dir && status === "diff") a.push(this.btn(`df-${path}`, "diff", "Mit Server vergleichen", (_e, cx) => this.showDiff(path, cx), t, { color: t.blocked }));
-      if (status === "diff" && !entry.dir) a.push(this.btn(`dn-${path}`, "download", "Server-Version holen", (_e, cx) => this.download(path, false, cx), t));
-      a.push(this.btn(`up-${path}`, "upload", entry.dir ? "Ordner hochladen" : "Hochladen", (_e, cx) => this.upload(path, entry.dir, cx), t, { color: status === "local" || status === "diff" ? t.ansi2 : undefined }));
+      if (!entry.dir && status === "diff") a.push(this.btn(`df-${path}`, "diff", L("Mit Server vergleichen", "Compare with server"), (_e, cx) => this.showDiff(path, cx), t, { color: t.blocked }));
+      if (status === "diff" && !entry.dir) a.push(this.btn(`dn-${path}`, "download", L("Server-Version holen", "Get server version"), (_e, cx) => this.download(path, false, cx), t));
+      a.push(this.btn(`up-${path}`, "upload", entry.dir ? L("Ordner hochladen", "Upload folder") : L("Hochladen", "Upload"), (_e, cx) => this.upload(path, entry.dir, cx), t, { color: status === "local" || status === "diff" ? t.ansi2 : undefined }));
     }
     return a;
   }
@@ -545,15 +573,20 @@ export default class Commander extends View {
     const following = !(this.pinned && this.pinned.space === (spaces().find((s) => s.active)?.id ?? null));
     return h_flex().h(40).flex_none().pl(overlay ? 12 : 10).pr(6).gap(2).items_center().border_b(1).border_color(t.border).bg(t.chrome)
       .child(div().font_semibold().pr(6).child("201Commander"))
-      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(tilde(this.root) || "Kein Ordner"))
-      .child(this.btn("h-up", "up", "Übergeordneter Ordner", (_e, cx) => this.root && this.setPinned(dirname(this.root) || "/", cx), t, { enabled: Boolean(this.root) && !this.on }))
-      .child(this.btn("h-pick", "folder-open", "Ordner wählen…", (_e, cx) => cx.spawn(async (cx) => { const p = await pickFolder({ prompt: "Öffnen" }); if (p) this.setPinned(p, cx); }), t))
-      .child(this.btn("h-follow", following ? "crosshair" : "pin", following ? "Hauptordner des Space – klicken zum Fixieren" : "Fixiert – klicken für den Hauptordner des Space", (_e, cx) => this.setPinned(following ? this.root : null, cx), t, { color: following ? t.accent : t.blocked, enabled: Boolean(this.root || this.pinned) }))
-      .child(this.btn("h-refresh", "refresh", "Neu laden", (_e, cx) => { this.refresh(cx); if (this.connected()) cx.spawn(async (cx) => { await this.compareAll(this.ctx, cx); cx.notify(); }); }, t))
-      .child(this.btn("h-finder", "finder", "Ordner im Finder öffnen", () => this.finder("", true), t, { enabled: Boolean(this.root) && !this.on }))
-      .child(this.btn("h-ssh", "server", "SSH-Server verbinden / vergleichen", (_e, cx) => { this.sshOpen = !this.sshOpen; }, t,
+      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(tilde(this.root) || L("Kein Ordner", "No folder")))
+      .child(this.btn("h-up", "up", L("Übergeordneter Ordner", "Parent folder"), (_e, cx) => this.root && this.setPinned(dirname(this.root) || "/", cx), t, { enabled: Boolean(this.root) && !this.on }))
+      .child(this.btn("h-pick", "folder-open", L("Ordner wählen…", "Choose folder…"), (_e, cx) => cx.spawn(async (cx) => { const p = await pickFolder({ prompt: L("Öffnen", "Open") }); if (p) this.setPinned(p, cx); }), t))
+      .child(this.btn("h-follow", following ? "crosshair" : "pin", following ? L("Hauptordner des Space – klicken zum Fixieren", "Space main folder – click to pin") : L("Fixiert – klicken für den Hauptordner des Space", "Pinned – click for the space main folder"), (_e, cx) => this.setPinned(following ? this.root : null, cx), t, { color: following ? t.accent : t.blocked, enabled: Boolean(this.root || this.pinned) }))
+      .child(this.btn("h-refresh", "refresh", L("Neu laden", "Reload"), (_e, cx) => { this.refresh(cx); if (this.connected()) cx.spawn(async (cx) => { await this.compareAll(this.ctx, cx); cx.notify(); }); }, t))
+      .child(this.btn("h-finder", "finder", L("Ordner im Finder öffnen", "Open folder in Finder"), () => this.finder("", true), t, { enabled: Boolean(this.root) && !this.on }))
+      .child(this.btn("h-ssh", "server", L("SSH-Server verbinden / vergleichen", "Connect / compare SSH server"), (_e, cx) => { this.sshOpen = !this.sshOpen; }, t,
         { color: this.conn.state === "ok" ? t.ansi2 : this.conn.state === "error" ? t.ansi1 : this.sshOpen ? t.foreground : undefined, enabled: !this.on }))
-      .when(Boolean(overlay), (e) => e.child(this.btn("h-close", "x", "Schließen", () => closeOverlay(overlay), t)));
+      .child(div().id("h-lang").h(26).px(6).flex().items_center().rounded(6).flex_none().cursor_pointer().text_size(11).font_semibold().text_color(t.dim)
+        .hover((st) => st.bg(t.hover).text_color(t.foreground)).tooltip(L("Sprache: Deutsch – klicken für Englisch", "Language: English – click for German"))
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .on_click((_e, cx) => { cx.stop_propagation(); setShared(LANG_KEY, UI_DE ? "en" : "de"); cx.notify(); })
+        .child(UI_DE ? "DE" : "EN"))
+      .when(Boolean(overlay), (e) => e.child(this.btn("h-close", "x", L("Schließen", "Close"), () => closeOverlay(overlay), t)));
   }
 
   sshBar(t) {
@@ -567,25 +600,25 @@ export default class Commander extends View {
       .child(h_flex().gap(6).items_center().flex_wrap()
         .child(field("ssh-host", this.hostInput, 150))
         .child(field("ssh-remote", this.remoteInput, 150))
-        .child(this.btn("ssh-connect", "server", "Verbinden und vergleichen", (_e, cx) => this.connect(cx), t, { solid: true, label: st === "ok" ? "Neu verbinden" : "Verbinden" }))
-        .when(Boolean(c), (e) => e.child(this.btn("ssh-forget", "x", "Zuordnung entfernen", (_e, cx) => this.disconnect(cx), t))))
+        .child(this.btn("ssh-connect", "server", L("Verbinden und vergleichen", "Connect and compare"), (_e, cx) => this.connect(cx), t, { solid: true, label: st === "ok" ? L("Neu verbinden", "Reconnect") : L("Verbinden", "Connect") }))
+        .when(Boolean(c), (e) => e.child(this.btn("ssh-forget", "x", L("Zuordnung entfernen", "Remove mapping"), (_e, cx) => this.disconnect(cx), t))))
       .child(h_flex().gap(8).items_center().text_color(t.dim)
         .child(st === "connecting" ? div().text_color(t.working).frames(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], 90) : div().w(8).h(8).rounded(4).flex_none().bg(st === "ok" ? t.ansi2 : st === "error" ? t.ansi1 : t.dim))
         .child(div().flex_1().min_w(0).truncate().text_color(st === "error" ? t.ansi1 : t.dim).child(
-          st === "ok" ? `${c.host}:${c.remote}${this.conn.missing ? " (Ordner existiert noch nicht)" : ""}`
-            : st === "error" ? this.conn.msg : st === "connecting" ? "Verbinde…" : `Lokaler Ordner ${tilde(this.root)} ↔ Server-Ordner (gleiche Struktur). SSH-Key nötig.`))
+          st === "ok" ? `${c.host}:${c.remote}${this.conn.missing ? L(" (Ordner existiert noch nicht)", " (folder does not exist yet)") : ""}`
+            : st === "error" ? this.conn.msg : st === "connecting" ? L("Verbinde…", "Connecting…") : L(`Lokaler Ordner ${tilde(this.root)} ↔ Server-Ordner (gleiche Struktur). SSH-Key nötig.`, `Local folder ${tilde(this.root)} ↔ server folder (same structure). Needs an SSH key.`)))
         .when(st === "ok", (e) => e
           .child(div().text_color(t.blocked).child(`≠ ${counts.diff}`)).child(div().text_color(t.ansi2).child(`↑ ${counts.local}`)).child(div().text_color(t.ansi4).child(`↓ ${counts.remote}`))
-          .child(this.btn("ssh-cmp", "refresh", "Erneut vergleichen", (_e, cx) => cx.spawn(async (cx) => { await this.compareAll(this.ctx, cx).catch((e) => { this.note = { text: String(e.message ?? e), level: "error" }; }); cx.notify(); }), t))
-          .child(this.btn("ssh-all", "upload", "Alle Unterschiede in geöffneten Ordnern hochladen", (_e, cx) => this.uploadAllChanged(cx), t, { label: "Alle hoch", color: t.ansi2, enabled: counts.diff + counts.local > 0 }))));
+          .child(this.btn("ssh-cmp", "refresh", L("Erneut vergleichen", "Compare again"), (_e, cx) => cx.spawn(async (cx) => { await this.compareAll(this.ctx, cx).catch((e) => { this.note = { text: String(e.message ?? e), level: "error" }; }); cx.notify(); }), t))
+          .child(this.btn("ssh-all", "upload", L("Alle Unterschiede in geöffneten Ordnern hochladen", "Upload all differences in open folders"), (_e, cx) => this.uploadAllChanged(cx), t, { label: L("Alle hoch", "Upload all"), color: t.ansi2, enabled: counts.diff + counts.local > 0 }))));
   }
 
   tree(t) {
     const rows = this.rows("", 0, [], t);
     return div().flex_1().min_h(0).relative()
       .child(v_flex().id("201commander-tree").absolute().inset_0().overflow_y_scroll().p(5).children(rows)
-        .when(Boolean(this.error) || !rows.length, (e) => e.child(div().p(8).text_size(12).text_color(this.error ? t.ansi1 : t.dim).child(this.error || (this.loading ? "Lade…" : this.root ? "Leerer Ordner" : "Kein Ordner – Ordner wählen oder ein Terminal fokussieren"))))
-        .when(this.limited, (e) => e.child(div().p(8).text_size(11).text_color(t.dim).child("Liste begrenzt auf 500 Einträge pro Ordner / 5.000 gesamt"))))
+        .when(Boolean(this.error) || !rows.length, (e) => e.child(div().p(8).text_size(12).text_color(this.error ? t.ansi1 : t.dim).child(this.error || (this.loading ? L("Lade…", "Loading…") : this.root ? L("Leerer Ordner", "Empty folder") : L("Kein Ordner – Ordner wählen oder ein Terminal fokussieren", "No folder – choose one or start a terminal in this space")))))
+        .when(this.limited, (e) => e.child(div().p(8).text_size(11).text_color(t.dim).child(L("Liste begrenzt auf 500 Einträge pro Ordner / 5.000 gesamt", "List limited to 500 entries per folder / 5,000 total")))))
       .child(Scrollbar.vertical("201commander-tree").absolute().inset_0());
   }
 
@@ -593,39 +626,39 @@ export default class Commander extends View {
     const rel = this.file, conn = this.connected(), status = conn ? this.cmp.get(rel) : null;
     return v_flex().flex_1().h_full().min_w(0).min_h(0)
       .child(h_flex().h(36).flex_none().px(6).gap(2).items_center().border_b(1).border_color(t.border)
-        .when(narrow, (e) => e.child(this.btn("f-back", "back", "Zurück zur Liste", () => this.guard(() => { this.closeFile(); this.view = "tree"; }), t)))
+        .when(narrow, (e) => e.child(this.btn("f-back", "back", L("Zurück zur Liste", "Back to list"), () => this.guard(() => { this.closeFile(); this.view = "tree"; }), t)))
         .child(h_flex().flex_1().min_w(0).gap(6).items_center().px(4)
           .child(div().min_w(0).truncate().font_semibold().text_size(12).child(basename(rel)))
           .when(this.dirty, (e) => e.child(div().w(7).h(7).rounded(4).flex_none().bg(t.blocked)))
           .child(div().min_w(0).flex_1().truncate().text_size(11).text_color(t.dim).child(dirname(rel)))
           .when(Boolean(status) && status !== "same", (e) => e.child(this.badge(status, t))))
         .when(!this.on, (e) => e
-          .child(this.btn("f-save", "save", "Speichern (⌘S)", (_e, cx) => this.save(cx), t, { enabled: this.dirty || this.conflict, solid: this.dirty, label: this.saving ? "…" : "Speichern" }))
-          .child(this.btn("f-finder", "finder", "Im Finder zeigen", () => this.finder(rel, false), t))
-          .child(this.btn("f-open", "external", "Mit Standard-App öffnen", () => this.openDefault(rel), t))
-          .child(this.btn("f-copy", "copy", "Pfad kopieren", (_e, cx) => this.copyPath(rel, cx), t)))
+          .child(this.btn("f-save", "save", L("Speichern (⌘S)", "Save (⌘S)"), (_e, cx) => this.save(cx), t, { enabled: this.dirty || this.conflict, solid: this.dirty, label: this.saving ? "…" : L("Speichern", "Save") }))
+          .child(this.btn("f-finder", "finder", L("Im Finder zeigen", "Show in Finder"), () => this.finder(rel, false), t))
+          .child(this.btn("f-open", "external", L("Mit Standard-App öffnen", "Open with default app"), () => this.openDefault(rel), t))
+          .child(this.btn("f-copy", "copy", L("Pfad kopieren", "Copy path"), (_e, cx) => this.copyPath(rel, cx), t)))
         .when(conn, (e) => e
-          .child(this.btn("f-diff", "diff", "Mit Server vergleichen", (_e, cx) => this.showDiff(rel, cx), t, { color: status === "diff" ? t.blocked : undefined }))
-          .child(this.btn("f-up", "upload", "Auf Server hochladen", (_e, cx) => { if (this.dirty) this.note = { text: "Erst speichern, dann hochladen", level: "error" }; else this.upload(rel, false, cx); }, t, { color: status === "local" || status === "diff" ? t.ansi2 : undefined }))))
+          .child(this.btn("f-diff", "diff", L("Mit Server vergleichen", "Compare with server"), (_e, cx) => this.showDiff(rel, cx), t, { color: status === "diff" ? t.blocked : undefined }))
+          .child(this.btn("f-up", "upload", L("Auf Server hochladen", "Upload to server"), (_e, cx) => { if (this.dirty) this.note = { text: L("Erst speichern, dann hochladen", "Save first, then upload"), level: "error" }; else this.upload(rel, false, cx); }, t, { color: status === "local" || status === "diff" ? t.ansi2 : undefined }))))
       .when(this.conflict, (e) => e.child(h_flex().flex_none().px(10).py(6).gap(8).items_center().bg(t.ansi1 + "22").text_size(12)
-        .child(div().flex_1().child("Datei wurde extern geändert."))
-        .child(this.btn("c-reload", "refresh", "Neu laden (eigene Änderungen verwerfen)", (_e, cx) => this.reload(cx), t, { label: "Neu laden" }))
-        .child(this.btn("c-force", "save", "Trotzdem überschreiben", (_e, cx) => this.save(cx, true), t, { label: "Überschreiben" }))))
+        .child(div().flex_1().child(L("Datei wurde extern geändert.", "The file was changed elsewhere.")))
+        .child(this.btn("c-reload", "refresh", L("Neu laden (eigene Änderungen verwerfen)", "Reload (discard your changes)"), (_e, cx) => this.reload(cx), t, { label: L("Neu laden", "Reload") }))
+        .child(this.btn("c-force", "save", L("Trotzdem überschreiben", "Overwrite anyway"), (_e, cx) => this.save(cx, true), t, { label: L("Überschreiben", "Overwrite") }))))
       .child(div().flex_1().min_h(0).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-        .child(this.editor ? Editor.new(this.editor).size_full() : div().p(12).text_size(12).text_color(t.dim).child(this.fileError || "Lade Datei…")));
+        .child(this.editor ? Editor.new(this.editor).size_full() : div().p(12).text_size(12).text_color(t.dim).child(this.fileError || L("Lade Datei…", "Loading file…"))));
   }
 
   diffView(t, narrow) {
     const rel = this.diffFile, rows = this.diff ?? [];
     return v_flex().flex_1().h_full().min_w(0).min_h(0)
       .child(h_flex().h(36).flex_none().px(6).gap(4).items_center().border_b(1).border_color(t.border)
-        .child(this.btn("d-back", "back", "Zurück", () => { this.view = this.file ? "file" : "tree"; }, t))
-        .child(div().flex_1().min_w(0).truncate().text_size(12).child(h_flex().gap(6).child(div().font_semibold().child(basename(rel))).child(div().text_color(t.ansi1).child("− lokal")).child(div().text_color(t.ansi2).child("+ server"))))
-        .child(this.btn("d-up", "upload", "Lokale Version hochladen", (_e, cx) => this.upload(rel, false, cx), t, { label: "Hochladen", color: t.ansi2 }))
-        .child(this.btn("d-dn", "download", "Server-Version übernehmen", (_e, cx) => this.download(rel, false, cx), t, { label: "Übernehmen", color: t.ansi4 }))
-        .child(this.btn("d-edit", "file", "Lokal bearbeiten", (_e, cx) => this.openFile(rel, cx), t)))
+        .child(this.btn("d-back", "back", L("Zurück", "Back"), () => { this.view = this.file ? "file" : "tree"; }, t))
+        .child(div().flex_1().min_w(0).truncate().text_size(12).child(h_flex().gap(6).child(div().font_semibold().child(basename(rel))).child(div().text_color(t.ansi1).child(L("− lokal", "− local"))).child(div().text_color(t.ansi2).child("+ server"))))
+        .child(this.btn("d-up", "upload", L("Lokale Version hochladen", "Upload local version"), (_e, cx) => this.upload(rel, false, cx), t, { label: L("Hochladen", "Upload"), color: t.ansi2 }))
+        .child(this.btn("d-dn", "download", L("Server-Version übernehmen", "Take server version"), (_e, cx) => this.download(rel, false, cx), t, { label: L("Übernehmen", "Take"), color: t.ansi4 }))
+        .child(this.btn("d-edit", "file", L("Lokal bearbeiten", "Edit locally"), (_e, cx) => this.openFile(rel, cx), t)))
       .child(this.diffError ? div().p(12).text_size(12).text_color(t.ansi1).child(this.diffError)
-        : !this.diff ? div().p(12).text_size(12).text_color(t.dim).child("Hole Server-Version…")
+        : !this.diff ? div().p(12).text_size(12).text_color(t.dim).child(L("Hole Server-Version…", "Fetching server version…"))
         : div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(11.5)
           .child(v_virtual_list("201commander-diff", rows.length, 20, (i) => String(i), (range) => rows.slice(range.start, range.end).map(({ kind, number, text }) =>
             kind === "@" ? div().w_full().px(10).h(20).flex_none().truncate().bg(t.raised).text_color(t.dim).child(text)
@@ -641,7 +674,7 @@ export default class Commander extends View {
       const c = this.confirm;
       return h_flex().flex_none().px(10).py(7).gap(8).items_center().border_t(1).border_color(t.border).bg(t.raised).text_size(12)
         .child(div().flex_1().min_w(0).child(c.text))
-        .child(this.btn("cf-no", "x", "Abbrechen", () => { this.confirm = null; }, t, { label: "Abbrechen" }))
+        .child(this.btn("cf-no", "x", L("Abbrechen", "Cancel"), () => { this.confirm = null; }, t, { label: L("Abbrechen", "Cancel") }))
         .child(this.btn("cf-yes", "upload", c.yes, () => { this.confirm = null; c.action(); }, t, { solid: true, label: c.yes }));
     }
     if (this.busy) return h_flex().flex_none().px(10).py(6).gap(8).items_center().border_t(1).border_color(t.border).text_size(12).text_color(t.muted)
@@ -653,12 +686,14 @@ export default class Commander extends View {
   }
 
   render(cx) {
+    const forced = shared(LANG_KEY);
+    UI_DE = forced === "de" || forced === "en" ? forced === "de" : Boolean(this.autoDe);
     this.resolveRoots(cx);
     if (this.key() !== this.ctx?.key && !checking()) this.refresh(cx);
     const t = theme(), overlay = props()?.overlay, wide = this.width >= 760;
     let content = null;
     try { content = this.view === "diff" && this.diffFile ? this.diffView(t, !wide) : this.view === "file" && this.file ? this.fileView(t, !wide) : null; }
-    catch (e) { content = div().p(12).text_size(12).text_color(t.ansi1).child(`Fehler: ${e?.message ?? e}`); }
+    catch (e) { content = div().p(12).text_size(12).text_color(t.ansi1).child(L(`Fehler: ${e?.message ?? e}`, `Error: ${e?.message ?? e}`)); }
     const footer = this.footer(t);
     return v_flex().id("201commander").size_full().min_h(0).overflow_hidden().bg(t.background).text_color(t.foreground).text_size(13)
       .when(!overlay, (e) => e.rounded(10).border_1().border_color(t.border))
